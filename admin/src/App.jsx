@@ -32,8 +32,11 @@ function isTokenValid() {
 function App() {
   const validToken = isTokenValid();
   const [needsSetup, setNeedsSetup] = useState(null); // null = loading
+  const [apiError, setApiError] = useState(false);
 
-  useEffect(() => {
+  const checkSetup = () => {
+    setApiError(false);
+    setNeedsSetup(null);
     axios.get(`${API_URL}/api/auth/setup-status`)
       .then(res => {
         if (res.data.success) {
@@ -41,15 +44,26 @@ function App() {
         }
       })
       .catch(() => {
-        setNeedsSetup(false); // fallback: assume setup done if API fails
+        setApiError(true);
       });
-  }, []);
+  };
 
-  // Show nothing while checking setup status
+  useEffect(() => { checkSetup(); }, []);
+
+  // Show loading or error while checking setup status
   if (needsSetup === null) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #1a0a3e, #0f172a, #2d1070)' }}>
-        <div className="w-8 h-8 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+      <div className="min-h-screen flex items-center justify-center flex-col gap-4" style={{ background: 'linear-gradient(135deg, #1a0a3e, #0f172a, #2d1070)' }}>
+        {apiError ? (
+          <>
+            <p className="text-red-300 text-sm text-center px-6">API-yə qoşulmaq mümkün olmadı. Backend serverinin işlədiyinə əmin olun.</p>
+            <button onClick={checkSetup} className="text-white px-4 py-2 rounded-xl text-sm hover:opacity-90 transition" style={{ backgroundColor: '#7852ff' }}>
+              Yenidən Cəhd Et
+            </button>
+          </>
+        ) : (
+          <div className="w-8 h-8 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+        )}
       </div>
     );
   }
