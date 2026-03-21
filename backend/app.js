@@ -8,8 +8,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
-import bcrypt from 'bcryptjs';
-import User from './src/models/User.js';
 import authRoutes from './src/routes/authRoutes.js';
 import appealRoutes from './src/routes/appealRoutes.js';
 
@@ -163,48 +161,10 @@ app.listen(PORT, () => {
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/aiasan')
-    .then(async () => {
+    .then(() => {
         console.log('Connected to MongoDB');
-
-        // Ensure default admin account exists (Issue #2 — credentials from env)
-        try {
-            const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@asan.az';
-            const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Admin123!';
-            const adminExists = await User.findOne({ email: adminEmail });
-            if (!adminExists) {
-                await User.create({
-                    email: adminEmail,
-                    password: adminPassword,
-                    role: 'admin',
-                    firstName: 'System',
-                    lastName: 'Administrator'
-                });
-                console.log(`Default admin account created: ${adminEmail}`);
-            }
-        } catch (seedErr) {
-            console.error('Failed to seed default admin user:', seedErr.message);
-        }
-
-        // Auto-migrate plaintext passwords to bcrypt hashes
-        try {
-            const users = await User.find({});
-            let migrated = 0;
-            for (const user of users) {
-                // bcrypt hashes start with $2a$ or $2b$ — if not, it's plaintext
-                if (!user.password.startsWith('$2a$') && !user.password.startsWith('$2b$')) {
-                    const salt = await bcrypt.genSalt(10);
-                    user.password = await bcrypt.hash(user.password, salt);
-                    await User.updateOne({ _id: user._id }, { $set: { password: user.password } });
-                    migrated++;
-                }
-            }
-            if (migrated > 0) {
-                console.log(`Migrated ${migrated} plaintext password(s) to bcrypt hashes.`);
-            }
-        } catch (migrateErr) {
-            console.error('Password migration error:', migrateErr.message);
-        }
     })
     .catch((err) => {
         console.error('Failed to connect to MongoDB', err);
     });
+

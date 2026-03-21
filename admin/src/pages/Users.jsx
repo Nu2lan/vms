@@ -11,7 +11,7 @@ export default function Users() {
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
     const [editUser, setEditUser] = useState(null);
-    const [form, setForm] = useState({ firstName: '', lastName: '', email: '', password: '' });
+    const [form, setForm] = useState({ firstName: '', lastName: '', username: '', password: '' });
     const [error, setError] = useState('');
     const currentUserId = JSON.parse(localStorage.getItem('asanAdminUser') || '{}')._id;
 
@@ -27,14 +27,14 @@ export default function Users() {
 
     const openCreate = () => {
         setEditUser(null);
-        setForm({ firstName: '', lastName: '', email: '', password: '' });
+        setForm({ firstName: '', lastName: '', username: '', password: '' });
         setShowModal(true);
         setError('');
     };
 
     const openEdit = (user) => {
         setEditUser(user);
-        setForm({ firstName: user.firstName, lastName: user.lastName, email: user.email, password: '' });
+        setForm({ firstName: user.firstName, lastName: user.lastName, username: user.username || '', password: '' });
         setShowModal(true);
         setError('');
     };
@@ -84,7 +84,7 @@ export default function Users() {
                     <thead className="bg-slate-50 border-b border-slate-200">
                         <tr>
                             <th className="text-left px-6 py-4 text-xs font-semibold text-slate-500 uppercase">Ad</th>
-                            <th className="text-left px-6 py-4 text-xs font-semibold text-slate-500 uppercase">Email</th>
+                            <th className="text-left px-6 py-4 text-xs font-semibold text-slate-500 uppercase">İstifadəçi adı</th>
                             <th className="text-left px-6 py-4 text-xs font-semibold text-slate-500 uppercase">Rol</th>
                             <th className="text-left px-6 py-4 text-xs font-semibold text-slate-500 uppercase">Əməliyyatlar</th>
                         </tr>
@@ -93,7 +93,7 @@ export default function Users() {
                         {users.map((u) => (
                             <tr key={u._id} className="hover:bg-slate-50 transition">
                                 <td className="px-6 py-4 font-semibold text-slate-800">{u.firstName} {u.lastName}</td>
-                                <td className="px-6 py-4 text-slate-600">{u.email}</td>
+                                <td className="px-6 py-4 text-slate-600">{u.username}</td>
                                 <td className="px-6 py-4"><span className="px-2 py-1 rounded text-xs font-bold uppercase" style={{ backgroundColor: '#7852ff20', color: '#7852ff' }}>{u.role}</span></td>
                                 <td className="px-6 py-4 flex gap-2">
                                     <button onClick={() => openEdit(u)} className="p-2 hover:bg-purple-50 rounded-lg transition" style={{ color: '#7852ff' }}><Pencil className="w-4 h-4" /></button>
@@ -115,7 +115,7 @@ export default function Users() {
                             <h3 className="font-semibold text-slate-800">{u.firstName} {u.lastName}</h3>
                             <span className="px-2 py-1 rounded text-xs font-bold uppercase" style={{ backgroundColor: '#7852ff20', color: '#7852ff' }}>{u.role}</span>
                         </div>
-                        <p className="text-sm text-slate-500 mb-3">{u.email}</p>
+                        <p className="text-sm text-slate-500 mb-3">{u.username}</p>
                         <div className="flex gap-2">
                             <button onClick={() => openEdit(u)} className="flex-1 text-sm font-medium py-2 rounded-lg transition flex items-center justify-center gap-1" style={{ color: '#7852ff', backgroundColor: '#7852ff10' }}>
                                 <Pencil className="w-3.5 h-3.5" /> Redaktə
@@ -142,7 +142,7 @@ export default function Users() {
                         <form onSubmit={handleSubmit} className="space-y-4">
                             <input value={form.firstName} onChange={e => setForm({ ...form, firstName: e.target.value })} placeholder="Ad" className="w-full border border-slate-200 p-3 rounded-xl" required />
                             <input value={form.lastName} onChange={e => setForm({ ...form, lastName: e.target.value })} placeholder="Soyad" className="w-full border border-slate-200 p-3 rounded-xl" required />
-                            <input value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} type="email" placeholder="Email" className="w-full border border-slate-200 p-3 rounded-xl" required />
+                            <input value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} type="text" placeholder="İstifadəçi adı" className="w-full border border-slate-200 p-3 rounded-xl" required />
                             <input value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} type="password" placeholder={editUser ? 'Yeni Şifrə (saxlamaq üçün boş buraxın)' : 'Şifrə'} className="w-full border border-slate-200 p-3 rounded-xl" {...(!editUser && { required: true })} />
                             <button type="submit" className="w-full text-white px-5 py-3 rounded-xl font-medium hover:opacity-90 transition" style={{ backgroundColor: '#7852ff' }}>
                                 {editUser ? 'Yenilə' : 'Yarat'}

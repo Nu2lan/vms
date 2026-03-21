@@ -9,6 +9,66 @@ const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
+// @route   GET /api/auth/setup-status
+// @desc    Check if initial admin setup is needed
+// @access  Public
+router.get('/setup-status', async (req, res) => {
+    try {
+        const adminCount = await User.countDocuments({ role: 'admin' });
+        res.sendSuccess({ needsSetup: adminCount === 0 });
+    } catch (error) {
+        res.sendError(500, 'ERR_SETUP_CHECK', error.message);
+    }
+});
+
+// @route   POST /api/auth/setup
+// @desc    Create the first admin user (only works when no admins exist)
+// @access  Public
+router.post('/setup', async (req, res) => {
+    try {
+        const adminCount = await User.countDocuments({ role: 'admin' });
+        if (adminCount > 0) {
+            return res.sendError(403, 'ERR_SETUP_DONE', 'Initial setup has already been completed');
+        }
+
+        const { fullName, username, password } = req.body;
+
+        if (!fullName || !username || !password) {
+            return res.sendError(400, 'ERR_MISSING_FIELDS', 'Please provide full name, username and password');
+        }
+
+        if (username.length < 3) {
+            return res.sendError(400, 'ERR_INVALID_USERNAME', 'Username must be at least 3 characters');
+        }
+
+        if (password.length < 6) {
+            return res.sendError(400, 'ERR_WEAK_PASSWORD', 'Password must be at least 6 characters');
+        }
+
+        const nameParts = fullName.trim().split(/\s+/);
+        const firstName = nameParts[0];
+        const lastName = nameParts.slice(1).join(' ') || '';
+
+        const user = await User.create({
+            username,
+            password,
+            firstName,
+            lastName,
+            role: 'admin'
+        });
+
+        res.sendSuccess({
+            _id: user._id,
+            role: user.role,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            token: generateToken(user._id, user.role)
+        });
+    } catch (error) {
+        res.sendError(500, 'ERR_SETUP_FAIL', error.message);
+    }
+});
+
 // @route   POST /api/auth/register
 router.post('/register', async (req, res) => {
     try {
@@ -45,12 +105,14 @@ router.post('/register', async (req, res) => {
 // @route   POST /api/auth/login
 router.post('/login', async (req, res) => {
     try {
-        const { email, fin, password } = req.body;
+        const { email, username, fin, password } = req.body;
 
-        // Find by FIN if provided, else fall back to email
+        // Find by FIN, username, or email
         let user;
         if (fin) {
             user = await User.findOne({ fin });
+        } else if (username) {
+            user = await User.findOne({ username });
         } else if (email) {
             user = await User.findOne({ email });
         }
@@ -65,7 +127,7 @@ router.post('/login', async (req, res) => {
                 token: generateToken(user._id, user.role)
             });
         } else {
-            res.sendError(401, 'ERR_INVALID_CREDS', 'Invalid email or password');
+            res.sendError(401, 'ERR_INVALID_CREDS', 'Invalid credentials');
         }
     } catch (error) {
         res.sendError(500, 'ERR_LOGIN_FAIL', error.message);
@@ -75,7 +137,7 @@ router.post('/login', async (req, res) => {
 // --- ADMIN USER MANAGEMENT ROUTES ---
 
 // @route   GET /api/auth/users
-// @desc    Get all users
+// @desc    Get all admin users
 // @access  Private/Admin
 router.get('/users', protect, authorize('admin'), async (req, res) => {
     try {
@@ -91,26 +153,26 @@ router.get('/users', protect, authorize('admin'), async (req, res) => {
 // @access  Private/Admin
 router.post('/users', protect, authorize('admin'), async (req, res) => {
     try {
-        const { email, password, firstName, lastName } = req.body;
+        const { username, password, firstName, lastName } = req.body;
 
-        if (!email || !password || !firstName || !lastName) {
+        if (!username || !password || !firstName || !lastName) {
             return res.sendError(400, 'ERR_MISSING_FIELDS', 'Please provide all required fields');
         }
 
-        const userExists = await User.findOne({ email });
+        const userExists = await User.findOne({ username });
         if (userExists) {
-            return res.sendError(400, 'ERR_USER_EXISTS', 'User with this email already exists');
+            return res.sendError(400, 'ERR_USER_EXISTS', 'User with this username already exists');
         }
 
         const user = await User.create({
-            email,
+            username,
             password,
             firstName,
             lastName,
-            role: 'admin' // Force role to admin as requested
+            role: 'admin'
         });
 
-        res.sendSuccess({ user: { _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role } });
+        res.sendSuccess({ user: { _id: user._id, username: user.username, firstName: user.firstName, lastName: user.lastName, role: user.role } });
     } catch (error) {
         res.sendError(500, 'ERR_CREATE_USER', error.message);
     }
@@ -121,21 +183,21 @@ router.post('/users', protect, authorize('admin'), async (req, res) => {
 // @access  Private/Admin
 router.put('/users/:id', protect, authorize('admin'), async (req, res) => {
     try {
-        const { email, password, firstName, lastName } = req.body;
+        const { username, password, firstName, lastName } = req.body;
         const user = await User.findById(req.params.id);
 
         if (!user) {
             return res.sendError(404, 'ERR_NOT_FOUND', 'User not found');
         }
 
-        if (email) user.email = email;
+        if (username) user.username = username;
         if (firstName) user.firstName = firstName;
         if (lastName) user.lastName = lastName;
         if (password) user.password = password;
 
         const updatedUser = await user.save();
         res.sendSuccess({
-            user: { _id: updatedUser._id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName, role: updatedUser.role }
+            user: { _id: updatedUser._id, username: updatedUser.username, firstName: updatedUser.firstName, lastName: updatedUser.lastName, role: updatedUser.role }
         });
     } catch (error) {
         res.sendError(500, 'ERR_UPDATE_USER', error.message);

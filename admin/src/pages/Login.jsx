@@ -6,7 +6,7 @@ import { API_URL } from '../config';
 
 export default function Login() {
     const navigate = useNavigate();
-    const [email, setEmail] = useState('');
+    const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
 
@@ -14,7 +14,7 @@ export default function Login() {
         e.preventDefault();
         setError('');
         try {
-            const res = await axios.post(`${API_URL}/api/auth/login`, { email, password });
+            const res = await axios.post(`${API_URL}/api/auth/login`, { username, password });
             if (res.data.success) {
                 const { token, _id, role, firstName, lastName } = res.data.data;
                 if (role !== 'admin') {
@@ -44,10 +44,10 @@ export default function Login() {
 
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <input
-                        type="email"
-                        placeholder="Email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
+                        type="text"
+                        placeholder="İstifadəçi adı"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
                         className="w-full bg-white/10 border border-white/20 text-white placeholder-purple-300 p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
                         required
                     />
