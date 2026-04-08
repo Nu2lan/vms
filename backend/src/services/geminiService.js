@@ -1,21 +1,17 @@
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 import fs from 'fs';
 
-// Helper to convert local file to the format required by the new @google/genai SDK
-function fileToGenerativePart(filePath, mimeType) {
+// Helper to convert local file to base64 data URL for OpenAI vision
+function fileToDataUrl(filePath, mimeType) {
     if (!fs.existsSync(filePath)) {
         throw new Error(`Media file not found on disk: ${filePath}. Cannot perform AI verification.`);
     }
-    return {
-        inlineData: {
-            data: Buffer.from(fs.readFileSync(filePath)).toString("base64"),
-            mimeType
-        },
-    };
+    const base64 = Buffer.from(fs.readFileSync(filePath)).toString('base64');
+    return `data:${mimeType};base64,${base64}`;
 }
 
 export const analyzeAppealMedia = async (filePath, mimeType) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const prompt = `
   You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
@@ -47,34 +43,34 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
   - "priority" must be strictly from the listed options (keep in English).
   `;
 
-    const imagePart = fileToGenerativePart(filePath, mimeType);
+    const imageUrl = fileToDataUrl(filePath, mimeType);
 
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-                prompt,
-                imagePart,
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            response_format: { type: 'json_object' },
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: prompt },
+                        { type: 'image_url', image_url: { url: imageUrl } }
+                    ]
+                }
             ],
-            config: {
-                responseMimeType: 'application/json'
-            }
+            max_tokens: 1000
         });
 
-        let responseText = response.text;
-        // Strip out markdown code blocks if Gemini ignores the json mime-type and sends them anyway
-        if (responseText.startsWith('```')) {
-            responseText = responseText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-        }
+        const responseText = response.choices[0].message.content;
         return JSON.parse(responseText);
     } catch (error) {
-        console.error("Gemini Analyze Error:", error);
-        throw new Error(error.message || "Failed to analyze media via Gemini.");
+        console.error("OpenAI Analyze Error:", error);
+        throw new Error(error.message || "Failed to analyze media via OpenAI.");
     }
 };
 
 export const verifyResolutionMedia = async (originalFilePath, originalMimeType, resolutionFilePath, resolutionMimeType) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const prompt = `
   You are an expert AI forensics analyst auditing an issue resolution for a citizen appeal platform.
@@ -117,29 +113,30 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
   }
   `;
 
-    const originalPart = fileToGenerativePart(originalFilePath, originalMimeType);
-    const resolutionPart = fileToGenerativePart(resolutionFilePath, resolutionMimeType);
+    const originalUrl = fileToDataUrl(originalFilePath, originalMimeType);
+    const resolutionUrl = fileToDataUrl(resolutionFilePath, resolutionMimeType);
 
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-                prompt,
-                originalPart,
-                resolutionPart,
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            response_format: { type: 'json_object' },
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: prompt },
+                        { type: 'image_url', image_url: { url: originalUrl, detail: 'high' } },
+                        { type: 'image_url', image_url: { url: resolutionUrl, detail: 'high' } }
+                    ]
+                }
             ],
-            config: {
-                responseMimeType: 'application/json'
-            }
+            max_tokens: 1000
         });
 
-        let responseText = response.text;
-        if (responseText.startsWith('```')) {
-            responseText = responseText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-        }
+        const responseText = response.choices[0].message.content;
         return JSON.parse(responseText);
     } catch (error) {
-        console.error("Gemini Verify Error:", error);
-        throw new Error(error.message || "Failed to verify media via Gemini.");
+        console.error("OpenAI Verify Error:", error);
+        throw new Error(error.message || "Failed to verify media via OpenAI.");
     }
 };
