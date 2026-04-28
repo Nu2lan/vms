@@ -44,9 +44,9 @@ function App() {
     <Routes>
       <Route path="/auth/mygovid" element={<MockMyGovID />} />
       <Route path="*" element={
-        <>
+        <div className="flex flex-col h-full">
           <Navbar />
-          <div className="pb-16 sm:pb-0">
+          <div className="flex-1 overflow-y-auto">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/login" element={!validToken ? <Login /> : <Navigate to="/my-appeals" />} />
@@ -58,7 +58,7 @@ function App() {
             </Routes>
           </div>
           <MobileBottomNav />
-        </>
+        </div>
       } />
     </Routes>
   );

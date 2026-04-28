@@ -41,8 +41,14 @@ export default function MobileBottomNav() {
         <>
             {/* Bottom Nav Bar */}
             <nav
-                className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-slate-200"
-                style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+                className="sm:hidden border-t border-slate-200 shrink-0"
+                style={{
+                    paddingBottom: 'env(safe-area-inset-bottom)',
+                    background: 'rgba(255,255,255,0.97)',
+                    backdropFilter: 'blur(16px)',
+                    WebkitBackdropFilter: 'blur(16px)',
+                    boxShadow: '0 -2px 20px rgba(0,0,0,0.08)'
+                }}
             >
                 <div className="flex">
                     {/* Home */}
