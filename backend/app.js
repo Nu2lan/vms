@@ -159,8 +159,9 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/aiasan')
+// Connect to MongoDB — support multiple Railway env var naming conventions
+const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || process.env.DATABASE_URL || 'mongodb://localhost:27017/aiasan';
+mongoose.connect(mongoUri)
     .then(() => {
         console.log('Connected to MongoDB');
     })
