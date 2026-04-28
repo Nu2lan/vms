@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import { protect, authorize } from '../middleware/auth.js';
@@ -63,6 +64,10 @@ router.post('/sso/mygovid', async (req, res) => {
 // @access  Public
 router.get('/setup-status', async (req, res) => {
     try {
+        // Check if MongoDB is connected (state 1 = connected)
+        if (mongoose.connection.readyState !== 1) {
+            return res.sendError(503, 'ERR_DB_NOT_CONNECTED', 'Database not connected');
+        }
         const adminCount = await User.countDocuments({ role: 'admin' });
         res.sendSuccess({ needsSetup: adminCount === 0 });
     } catch (error) {
