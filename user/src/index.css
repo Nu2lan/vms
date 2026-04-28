@@ -18,4 +18,11 @@
   body {
     @apply bg-slate-50 text-slate-900;
   }
+
+  /* Prevent iOS Safari from zooming in on input focus */
+  @media screen and (max-width: 640px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
 }

@@ -48,8 +48,8 @@ export default function MyAppeals() {
         <div className="max-w-4xl mx-auto px-4 py-6 sm:py-8">
             <div className="flex items-center justify-between mb-6 sm:mb-8">
                 <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">Müraciətlərim</h1>
-                <Link to="/submit" className="bg-blue-600 text-white px-3 sm:px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition flex items-center gap-2 text-sm">
-                    <PlusCircle className="w-4 h-4" /> <span className="hidden sm:inline">Yeni Müraciət</span><span className="sm:hidden">Yeni</span>
+                <Link to="/submit" className="hidden sm:flex bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition items-center gap-2 text-sm">
+                    <PlusCircle className="w-4 h-4" /> Yeni Müraciət
                 </Link>
             </div>
 
