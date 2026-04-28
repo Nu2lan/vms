@@ -16,6 +16,7 @@ export default function SubmitAppeal() {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState('');
+    const [warning, setWarning] = useState('');
     const [isEditing, setIsEditing] = useState(false);
     const [location, setLocation] = useState(null);
     const [locationSource, setLocationSource] = useState(null);
@@ -140,6 +141,15 @@ export default function SubmitAppeal() {
             });
             if (res.data.success) {
                 const data = res.data.data;
+                if (!data.aiAnalysis || !data.aiAnalysis.title) {
+                    setError('Sİ təhlil nəticəsi düzgün qaytarılmadı. Yenidən cəhd edin.');
+                    return;
+                }
+                if (data.aiAnalysis.no_problem_detected) {
+                    setWarning('ASAN xidmətin həll edəcəyi bir problem görünmür. Zəhmət olmasa, ASAN xidmətin həll edə biləcəyi bir problem olan şəkil yükləyin.');
+                } else {
+                    setWarning('');
+                }
                 setAnalysisResult({
                     analysis: data.aiAnalysis,
                     mediaId: data.mediaId,
@@ -189,6 +199,7 @@ export default function SubmitAppeal() {
         <div className="max-w-2xl mx-auto px-4 py-6 sm:py-8">
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 mb-6 sm:mb-8">Müraciət Göndər</h1>
 
+            {warning && <div className="mb-6 bg-yellow-50 text-yellow-700 border border-yellow-200 p-4 rounded-xl flex items-start gap-2"><span>⚠️</span><span>{warning}</span></div>}
             {error && <div className="mb-6 bg-red-50 text-red-600 p-4 rounded-xl">{error}</div>}
 
             {/* Step 1: Upload */}

@@ -18,9 +18,9 @@ export default function Register() {
         try {
             const res = await axios.post(`${API_URL}/api/auth/register`, { ...form, role: 'citizen' });
             if (res.data.success) {
-                const { token, _id, firstName, lastName } = res.data.data;
+                const { token, _id, firstName, lastName, fin } = res.data.data;
                 localStorage.setItem('asanToken', token);
-                localStorage.setItem('asanUser', JSON.stringify({ _id, firstName, lastName }));
+                localStorage.setItem('asanUser', JSON.stringify({ _id, firstName, lastName, fin }));
                 navigate('/my-appeals');
                 window.location.reload();
             }
@@ -44,6 +44,17 @@ export default function Register() {
                     <input type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="Şifrə" className="w-full border border-slate-200 p-3 rounded-xl" required />
                     <button type="submit" className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 transition">Qeydiyyat</button>
                 </form>
+
+                <div className="flex items-center gap-3 my-6">
+                    <div className="flex-1 h-px bg-slate-200" />
+                    <span className="text-xs text-slate-400 font-medium">və ya</span>
+                    <div className="flex-1 h-px bg-slate-200" />
+                </div>
+
+                <Link to="/auth/mygovid" className="w-full border border-slate-200 p-3 rounded-xl font-semibold text-slate-700 hover:bg-slate-50 transition flex items-center justify-center gap-3">
+                    <img src="/mygovid.svg" alt="myGov ID" className="h-5" />
+                </Link>
+
                 <p className="text-center text-sm text-slate-500 mt-6">
                     Artıq hesabınız var? <Link to="/login" className="text-blue-600 font-medium hover:underline">Daxil Ol</Link>
                 </p>

@@ -19,13 +19,13 @@ export default function Login() {
         try {
             const res = await axios.post(`${API_URL}/api/auth/login`, { fin, password });
             if (res.data.success) {
-                const { token, _id, role, firstName, lastName } = res.data.data;
+                const { token, _id, role, firstName, lastName, fin: userFin } = res.data.data;
                 if (role !== 'citizen') {
                     setError('Bu portal yalnız vətəndaşlar üçündür.');
                     return;
                 }
                 localStorage.setItem('asanToken', token);
-                localStorage.setItem('asanUser', JSON.stringify({ _id, firstName, lastName }));
+                localStorage.setItem('asanUser', JSON.stringify({ _id, firstName, lastName, fin: userFin }));
                 navigate('/my-appeals');
                 window.location.reload();
             }
@@ -45,6 +45,17 @@ export default function Login() {
                     <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Şifrə" className="w-full border border-slate-200 p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" required />
                     <button type="submit" className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 transition">Daxil Ol</button>
                 </form>
+
+                <div className="flex items-center gap-3 my-6">
+                    <div className="flex-1 h-px bg-slate-200" />
+                    <span className="text-xs text-slate-400 font-medium">və ya</span>
+                    <div className="flex-1 h-px bg-slate-200" />
+                </div>
+
+                <Link to="/auth/mygovid" className="w-full border border-slate-200 p-3 rounded-xl font-semibold text-slate-700 hover:bg-slate-50 transition flex items-center justify-center gap-3">
+                    <img src="/mygovid.svg" alt="myGov ID" className="h-5" />
+                </Link>
+
                 <p className="text-center text-sm text-slate-500 mt-6">
                     Hesabınız yoxdur? <Link to="/register" className="text-blue-600 font-medium hover:underline">Qeydiyyat</Link>
                 </p>

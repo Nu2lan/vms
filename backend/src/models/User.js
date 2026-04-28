@@ -41,6 +41,10 @@ const userSchema = new mongoose.Schema({
         uppercase: true,
         minlength: 7,
         maxlength: 7
+    },
+    picture: {
+        type: String,
+        default: null
     }
 }, { timestamps: true });
 

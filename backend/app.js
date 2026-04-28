@@ -160,7 +160,7 @@ app.listen(PORT, () => {
 });
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/aiasan')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/aiasan')
     .then(() => {
         console.log('Connected to MongoDB');
     })

@@ -21,8 +21,9 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
   
   You MUST return ONLY a valid JSON object matching exactly this structure, no markdown formatting or extra text:
   {
+    "no_problem_detected": true/false,
     "title": "Problemi ümumiləşdirən qısa 3-5 sözdən ibarət başlıq (Azərbaycan dilində)",
-    "description": "Göstərilən problemi təsvir edən avtomatik yaradılmış qısa mətn (Azərbaycan dilində)",
+    "description": "Göstərilən problemi ətraflı təsvir edən 3-5 cümlədən ibarət DETALLI mətn (Azərbaycan dilində). Problemin nə olduğunu, yerini, vəziyyətin ciddiliyini və vətəndaşlara təsirini ətraflı şəkildə izah edin.",
     "category": "One of: Roads & Transport, Utilities, Parks & Environment, Public Safety, Waste Management, Building & Infrastructure, Other",
     "priority": "One of: Low, Medium, High, Critical",
     "location": {
@@ -37,36 +38,59 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
   }
   
   Rules:
+  - If the image does NOT show any public infrastructure problem, city issue, or something that ASAN public services can resolve (e.g. selfies, food, animals, random objects, indoor personal photos), set "no_problem_detected" to true. In that case, still fill in the other fields with placeholder values.
+  - If the image DOES show a real public problem (broken roads, damaged infrastructure, waste, flooding, unsafe conditions, etc.), set "no_problem_detected" to false.
   - The "title" and "description" MUST be in Azerbaijani language.
+  - The "description" MUST be detailed and comprehensive, at least 3-5 sentences long. Describe what you see, the nature of the problem, its potential impact, and urgency.
   - Do not hallucinate. If completely unclear, set confidence scores very low.
   - "category" must be strictly from the listed options (keep in English).
   - "priority" must be strictly from the listed options (keep in English).
+  - You MUST always return ALL fields in the JSON structure. Never omit any field.
   `;
 
     const imageUrl = fileToDataUrl(filePath, mimeType);
+    const MAX_RETRIES = 3;
 
-    try {
-        const response = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            response_format: { type: 'json_object' },
-            messages: [
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: prompt },
-                        { type: 'image_url', image_url: { url: imageUrl } }
-                    ]
-                }
-            ],
-            max_tokens: 1000
-        });
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: 'gpt-4o',
+                response_format: { type: 'json_object' },
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze an image.'
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            { type: 'image_url', image_url: { url: imageUrl } }
+                        ]
+                    }
+                ],
+                max_tokens: 2000
+            });
 
-        const responseText = response.choices[0].message.content;
-        return JSON.parse(responseText);
-    } catch (error) {
-        console.error("OpenAI Analyze Error:", error);
-        throw new Error(error.message || "Failed to analyze media via OpenAI.");
+            const responseText = response.choices[0].message.content;
+            console.log(`[OpenAI] Attempt ${attempt} raw response:`, responseText);
+            const result = JSON.parse(responseText);
+
+            // Validate required fields
+            if (result.title && result.description && result.category && result.priority) {
+                return result;
+            }
+
+            console.warn(`[OpenAI] Attempt ${attempt}: Missing required fields, retrying...`);
+        } catch (error) {
+            console.error(`[OpenAI] Attempt ${attempt} error:`, error.message);
+            if (attempt === MAX_RETRIES) {
+                throw new Error(error.message || "Failed to analyze media via OpenAI.");
+            }
+        }
     }
+
+    throw new Error("AI analysis failed after multiple attempts. Please try again.");
 };
 
 export const verifyResolutionMedia = async (originalFilePath, originalMimeType, resolutionFilePath, resolutionMimeType) => {

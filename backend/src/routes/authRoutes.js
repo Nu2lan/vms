@@ -2,12 +2,61 @@ import express from 'express';
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import { protect, authorize } from '../middleware/auth.js';
+import crypto from 'crypto';
 
 const router = express.Router();
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
+
+// @route   POST /api/auth/sso/mygovid
+// @desc    Login or register via myGov ID SSO
+// @access  Public
+router.post('/sso/mygovid', async (req, res) => {
+    try {
+        const { fullName, fin, picture } = req.body;
+
+        if (!fin || !fullName) {
+            return res.sendError(400, 'ERR_MISSING_SSO_DATA', 'SSO data is incomplete');
+        }
+
+        // Check if user exists by FIN
+        let user = await User.findOne({ fin: fin.toUpperCase() });
+
+        if (!user) {
+            // Auto-register SSO user
+            const nameParts = fullName.trim().split(/\s+/);
+            const firstName = nameParts[0];
+            const lastName = nameParts.slice(1).join(' ') || '';
+
+            user = await User.create({
+                fin: fin.toUpperCase(),
+                firstName,
+                lastName,
+                picture: picture || null,
+                password: crypto.randomBytes(32).toString('hex'),
+                role: 'citizen'
+            });
+        } else if (picture) {
+            // Always update picture on login (in case it changed)
+            user.picture = picture;
+            await user.save();
+        }
+
+        res.sendSuccess({
+            _id: user._id,
+            role: user.role,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            fin: user.fin,
+            picture: picture || user.picture || null,
+            token: generateToken(user._id, user.role)
+        });
+    } catch (error) {
+        res.sendError(500, 'ERR_SSO_FAIL', error.message);
+    }
+});
 
 // @route   GET /api/auth/setup-status
 // @desc    Check if initial admin setup is needed
@@ -95,6 +144,7 @@ router.post('/register', async (req, res) => {
             role: user.role,
             firstName: user.firstName,
             lastName: user.lastName,
+            fin: user.fin,
             token: generateToken(user._id, user.role)
         });
     } catch (error) {
@@ -124,6 +174,7 @@ router.post('/login', async (req, res) => {
                 role: user.role,
                 firstName: user.firstName,
                 lastName: user.lastName,
+                fin: user.fin,
                 token: generateToken(user._id, user.role)
             });
         } else {
