@@ -364,17 +364,17 @@ export default function VerifyAppeal() {
                                 <input
                                     ref={cameraInputRef}
                                     type="file"
-                                    accept="image/*"
+                                    accept="image/*,video/*"
                                     capture="environment"
                                     onChange={handleNativeCameraCapture}
                                     className="hidden"
                                 />
                                 <button onClick={startCamera} className="border-2 border-dashed border-slate-300 rounded-xl p-8 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer flex flex-col items-center gap-3">
                                     <Camera className="w-10 h-10 text-purple-500" />
-                                    <span className="font-semibold text-slate-700 text-sm">Şəkil Çək</span>
+                                    <span className="font-semibold text-slate-700 text-sm">Şəkil/Video Çək</span>
                                 </button>
                                 <label className="border-2 border-dashed border-slate-300 rounded-xl p-8 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer flex flex-col items-center gap-3">
-                                    <input type="file" accept="image/*,video/mp4" onChange={handleFileChange} className="hidden" />
+                                    <input type="file" accept="image/*,video/*" onChange={handleFileChange} className="hidden" />
                                     <Image className="w-10 h-10 text-purple-500" />
                                     <span className="font-semibold text-slate-700 text-sm">Şəkil Yüklə</span>
                                 </label>
@@ -384,7 +384,11 @@ export default function VerifyAppeal() {
                         {/* Preview */}
                         {preview && !cameraActive && (
                             <div className="mb-6">
-                                <img src={preview} alt="Preview" className="w-full rounded-xl max-h-64 object-cover bg-slate-100" />
+                                {file?.type?.startsWith('video') ? (
+                                    <video src={preview} controls className="w-full rounded-xl max-h-64 bg-slate-100" />
+                                ) : (
+                                    <img src={preview} alt="Preview" className="w-full rounded-xl max-h-64 object-cover bg-slate-100" />
+                                )}
                             </div>
                         )}
 
