@@ -1,13 +1,59 @@
 import OpenAI from 'openai';
 import fs from 'fs';
+import { execSync } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
 
-// Helper to convert local file to base64 data URL for OpenAI vision
-function fileToDataUrl(filePath, mimeType) {
+// Get video duration in seconds using ffprobe (bundled with ffmpeg-static)
+function getVideoDuration(videoPath) {
+    try {
+        const result = execSync(
+            `"${ffmpegStatic.replace('ffmpeg', 'ffprobe')}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+            { stdio: 'pipe' }
+        ).toString().trim();
+        return parseFloat(result) || 5;
+    } catch {
+        return 5; // fallback duration
+    }
+}
+
+// Extract N evenly-spaced frames from video, return array of base64 data URLs
+function extractVideoFrames(videoPath, frameCount = 6) {
+    const duration = getVideoDuration(videoPath);
+    const frames = [];
+
+    for (let i = 0; i < frameCount; i++) {
+        // Spread frames evenly: 5%, 20%, 38%, 55%, 72%, 90% through the video
+        const timestamp = duration * (0.05 + (i * 0.17));
+        const framePath = `${videoPath}_frame${i}.jpg`;
+        try {
+            execSync(
+                `"${ffmpegStatic}" -y -ss ${timestamp.toFixed(2)} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}"`,
+                { stdio: 'pipe' }
+            );
+            if (fs.existsSync(framePath)) {
+                const base64 = Buffer.from(fs.readFileSync(framePath)).toString('base64');
+                frames.push(`data:image/jpeg;base64,${base64}`);
+                fs.unlinkSync(framePath);
+            }
+        } catch {
+            // Skip failed frame
+        }
+    }
+
+    if (frames.length === 0) throw new Error('Could not extract any frames from video.');
+    return frames;
+}
+
+// Convert file to array of data URLs — single image or multiple video frames
+function fileToDataUrls(filePath, mimeType) {
     if (!fs.existsSync(filePath)) {
-        throw new Error(`Media file not found on disk: ${filePath}. Cannot perform AI verification.`);
+        throw new Error(`Media file not found on disk: ${filePath}.`);
+    }
+    if (mimeType.startsWith('video/')) {
+        return extractVideoFrames(filePath, 6); // 6 frames = full video coverage
     }
     const base64 = Buffer.from(fs.readFileSync(filePath)).toString('base64');
-    return `data:${mimeType};base64,${base64}`;
+    return [`data:${mimeType};base64,${base64}`];
 }
 
 export const analyzeAppealMedia = async (filePath, mimeType) => {
@@ -15,7 +61,7 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
 
     const prompt = `
   You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
-  Analyze this image (or video frame) of a reported problem. 
+  Analyze this media (image or video frames) of a reported problem. If multiple frames are provided, they are evenly sampled from a video — analyze all of them together.
   
   IMPORTANT: The "title" and "description" fields MUST be written in Azerbaijani language (Azərbaycan dili).
   
@@ -48,7 +94,9 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
   - You MUST always return ALL fields in the JSON structure. Never omit any field.
   `;
 
-    const imageUrl = fileToDataUrl(filePath, mimeType);
+    const mediaUrls = fileToDataUrls(filePath, mimeType);
+    const isVideo = mimeType.startsWith('video/');
+    console.log(`[OpenAI] Analyzing ${isVideo ? mediaUrls.length + ' video frames' : 'image'}`);
     const MAX_RETRIES = 3;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -65,7 +113,7 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
                         role: 'user',
                         content: [
                             { type: 'text', text: prompt },
-                            { type: 'image_url', image_url: { url: imageUrl } }
+                            ...mediaUrls.map(url => ({ type: 'image_url', image_url: { url } }))
                         ]
                     }
                 ],
@@ -137,8 +185,9 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
   }
   `;
 
-    const originalUrl = fileToDataUrl(originalFilePath, originalMimeType);
-    const resolutionUrl = fileToDataUrl(resolutionFilePath, resolutionMimeType);
+    const originalUrls = fileToDataUrls(originalFilePath, originalMimeType);
+    const resolutionUrls = fileToDataUrls(resolutionFilePath, resolutionMimeType);
+    console.log(`[OpenAI] Verifying: ${originalUrls.length} original frame(s) vs ${resolutionUrls.length} resolution frame(s)`);
 
     try {
         const response = await openai.chat.completions.create({
@@ -149,8 +198,8 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
                     role: 'user',
                     content: [
                         { type: 'text', text: prompt },
-                        { type: 'image_url', image_url: { url: originalUrl, detail: 'high' } },
-                        { type: 'image_url', image_url: { url: resolutionUrl, detail: 'high' } }
+                        ...originalUrls.map(url => ({ type: 'image_url', image_url: { url, detail: 'high' } })),
+                        ...resolutionUrls.map(url => ({ type: 'image_url', image_url: { url, detail: 'high' } }))
                     ]
                 }
             ],

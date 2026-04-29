@@ -3,7 +3,7 @@ import path from 'path';
 import exifr from 'exifr';
 import Appeal from '../models/Appeal.js';
 import Media from '../models/Media.js';
-import { analyzeAppealMedia, verifyResolutionMedia } from '../services/geminiService.js';
+import { analyzeAppealMedia, verifyResolutionMedia } from '../services/openaiService.js';
 
 // @route   POST /api/appeals/analyze
 // @desc    Upload media and get AI analysis (Preview before submitting)

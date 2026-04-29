@@ -1,6 +1,6 @@
 import Appeal from '../models/Appeal.js';
 import Media from '../models/Media.js';
-import { verifyResolutionMedia } from '../services/geminiService.js';
+import { verifyResolutionMedia } from '../services/openaiService.js';
 import path from 'path';
 import exifr from 'exifr';
 // @route   POST /api/appeals/:id/verify
