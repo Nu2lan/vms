@@ -40,6 +40,7 @@ export default function VerifyAppeal() {
     const [capturedFromCamera, setCapturedFromCamera] = useState(false);
     const videoRef = useRef(null);
     const streamRef = useRef(null);
+    const cameraInputRef = useRef(null);
 
     useEffect(() => {
         const fetchAppeal = async () => {
@@ -67,6 +68,15 @@ export default function VerifyAppeal() {
 
     const startCamera = async () => {
         setError('');
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+        if (isMobile) {
+            // On mobile: trigger native camera app via file input
+            if (cameraInputRef.current) cameraInputRef.current.click();
+            return;
+        }
+
+        // Desktop: use getUserMedia webcam
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -79,6 +89,15 @@ export default function VerifyAppeal() {
         } catch {
             setError('Kameraya daxil olmaq mümkün olmadı. Kamera icazəsini verin və ya Şəkil Yüklə seçimindən istifadə edin.');
         }
+    };
+
+    const handleNativeCameraCapture = (e) => {
+        const selected = e.target.files[0];
+        if (!selected) return;
+        setFile(selected);
+        setPreview(URL.createObjectURL(selected));
+        setCapturedFromCamera(true);
+        e.target.value = '';
     };
 
     const stopCamera = useCallback(() => {
@@ -341,6 +360,15 @@ export default function VerifyAppeal() {
                         {/* Choose Method */}
                         {!preview && !cameraActive && (
                             <div className="grid grid-cols-2 gap-4 mb-6">
+                                {/* Hidden native camera input for mobile */}
+                                <input
+                                    ref={cameraInputRef}
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    onChange={handleNativeCameraCapture}
+                                    className="hidden"
+                                />
                                 <button onClick={startCamera} className="border-2 border-dashed border-slate-300 rounded-xl p-8 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer flex flex-col items-center gap-3">
                                     <Camera className="w-10 h-10 text-purple-500" />
                                     <span className="font-semibold text-slate-700 text-sm">Şəkil Çək</span>
@@ -364,7 +392,7 @@ export default function VerifyAppeal() {
                             <div className="flex gap-4">
                                 <button onClick={handleVerify} disabled={!file || isVerifying} className="flex-1 bg-slate-900 text-white font-bold py-4 rounded-xl disabled:opacity-50 hover:opacity-90 transition flex items-center justify-center gap-2 whitespace-nowrap" style={{ backgroundColor: '#7852ff' }}>
                                     {isVerifying ? <Loader2 className="w-5 h-5 animate-spin shrink-0" /> : <CheckCircle className="w-5 h-5 shrink-0" />}
-                                    <span>{isVerifying ? 'Sİ yoxlayır...' : 'Həlli Yoxla'}</span>
+                                    <span>{isVerifying ? 'Yoxlanılır...' : 'Həlli Yoxla'}</span>
                                 </button>
                                 <button onClick={() => { setFile(null); setPreview(null); }} className="flex-1 bg-slate-100 text-slate-700 hover:bg-slate-200 font-bold py-4 rounded-xl transition">
                                     Şəkli Dəyiş
