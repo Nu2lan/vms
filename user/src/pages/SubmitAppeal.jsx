@@ -52,18 +52,25 @@ export default function SubmitAppeal() {
         });
     };
 
-    // Open device camera
+    // Open device camera — native app on mobile, getUserMedia on desktop
+    const cameraInputRef = useRef(null);
+
     const startCamera = async () => {
         setError('');
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-        // Get GPS location while opening camera
+        if (isMobile) {
+            // On mobile: trigger native camera app via file input
+            if (cameraInputRef.current) cameraInputRef.current.click();
+            return;
+        }
+
+        // Desktop: use getUserMedia webcam
         const browserLoc = await getBrowserLocation();
         if (browserLoc) {
             setLocation(browserLoc);
             setLocationSource('gps');
         }
-
-        // Open camera
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -78,6 +85,30 @@ export default function SubmitAppeal() {
         } catch {
             setError('Kameraya daxil olmaq mümkün olmadı. Kamera icazəsini verin və ya Şəkil Yüklə seçimindən istifadə edin.');
         }
+    };
+
+    const handleNativeCameraCapture = async (e) => {
+        const selected = e.target.files[0];
+        if (!selected) return;
+        setFile(selected);
+        setPreview(URL.createObjectURL(selected));
+        setLocation(null);
+        setLocationSource(null);
+
+        // Try GPS first, then EXIF
+        const browserLoc = await getBrowserLocation();
+        if (browserLoc) {
+            setLocation(browserLoc);
+            setLocationSource('gps');
+            return;
+        }
+        const exifLoc = await extractExifLocation(selected);
+        if (exifLoc) {
+            setLocation(exifLoc);
+            setLocationSource('exif');
+        }
+        // Reset input value so same file can be selected again
+        e.target.value = '';
     };
 
     const stopCamera = useCallback(() => {
@@ -228,6 +259,15 @@ export default function SubmitAppeal() {
                     {/* Choose Method */}
                     {!preview && !cameraActive && (
                         <div className="grid grid-cols-2 gap-4 mb-6">
+                            {/* Hidden native camera input for mobile */}
+                            <input
+                                ref={cameraInputRef}
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                onChange={handleNativeCameraCapture}
+                                className="hidden"
+                            />
                             <button onClick={startCamera} className="border-2 border-dashed border-slate-300 rounded-xl p-8 hover:bg-blue-50 hover:border-blue-300 transition cursor-pointer flex flex-col items-center gap-3">
                                 <Camera className="w-10 h-10 text-blue-500" />
                                 <span className="font-semibold text-slate-700 text-sm">Şəkil Çək</span>
