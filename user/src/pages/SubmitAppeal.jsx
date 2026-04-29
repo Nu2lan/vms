@@ -309,7 +309,7 @@ export default function SubmitAppeal() {
                         <div className="flex gap-4">
                             <button onClick={handleAnalyze} disabled={!file || isAnalyzing} className="flex-1 bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 disabled:opacity-50 transition flex items-center justify-center gap-2">
                                 {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
-                                {isAnalyzing ? 'Sİ təhlil edir...' : 'Sİ ilə Təhlil Et'}
+                                {isAnalyzing ? 'Təhlil edilir...' : 'Təhlil et'}
                             </button>
                             <button onClick={() => { setFile(null); setPreview(null); setLocation(null); setLocationSource(null); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-4 rounded-xl hover:bg-slate-200 transition">
                                 Dəyiş
@@ -320,7 +320,7 @@ export default function SubmitAppeal() {
                     {!cameraActive && !preview && (
                         <button onClick={handleAnalyze} disabled={!file || isAnalyzing} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 disabled:opacity-50 transition flex items-center justify-center gap-2">
                             {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
-                            {isAnalyzing ? 'Sİ təhlil edir...' : 'Sİ ilə Təhlil Et'}
+                            {isAnalyzing ? 'Təhlil edilir...' : 'Təhlil et'}
                         </button>
                     )}
                 </div>
