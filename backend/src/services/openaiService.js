@@ -22,22 +22,23 @@ async function analyzeVideoWithMemoriesAI(filePath, mimeType) {
         throw new Error(`Video file not found: ${filePath}`);
     }
 
+    const BASE_URL = 'https://mavi-backend.memories.ai/serve/api/v2';
+
     console.log('[MemoriesAI] Uploading video for analysis...');
 
     const form = new FormData();
     form.append('file', fs.createReadStream(filePath), {
-        filename: filePath.split('/').pop() || 'video.mp4',
+        filename: filePath.split(/[\\/]/).pop() || 'video.mp4',
         contentType: mimeType
     });
-    form.append('prompt', `Bu videonu Azərbaycan dilində ətraflı təsvir et. Videoda gördüyün problemi, yerini, şiddətini və vətəndaşlara təsirini izah et. Yalnız Azərbaycan dilində yaz.`);
 
-    // Try synchronous caption endpoint first
-    let response;
+    // Upload the video
+    let uploadRes;
     try {
-        response = await fetch('https://api.memories.ai/v1/video/caption', {
+        uploadRes = await fetch(`${BASE_URL}/upload`, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${apiKey}`,
+                'Authorization': apiKey,   // No "Bearer" prefix per docs
                 ...form.getHeaders()
             },
             body: form
@@ -46,21 +47,52 @@ async function analyzeVideoWithMemoriesAI(filePath, mimeType) {
         throw new Error(`MemoriesAI network error: ${err.message}`);
     }
 
-    const data = await response.json();
-    console.log('[MemoriesAI] Response:', JSON.stringify(data));
+    const uploadData = await uploadRes.json();
+    console.log('[MemoriesAI] Upload response:', JSON.stringify(uploadData));
 
-    if (!response.ok) {
-        throw new Error(`MemoriesAI API error ${response.status}: ${data?.message || JSON.stringify(data)}`);
+    if (!uploadRes.ok) {
+        throw new Error(`MemoriesAI upload error ${uploadRes.status}: ${uploadData?.message || JSON.stringify(uploadData)}`);
     }
 
-    // Extract description from response (try common field names)
-    const description = data.caption || data.description || data.text || data.result || data.output;
-    if (!description) {
-        throw new Error(`MemoriesAI returned no description. Response: ${JSON.stringify(data)}`);
+    // If the response already contains a description/caption, return it directly
+    const directDescription = uploadData.caption || uploadData.description || uploadData.text || uploadData.result || uploadData.output;
+    if (directDescription) {
+        return directDescription;
     }
 
-    return description;
+    // Otherwise, poll for job completion using the returned ID
+    const jobId = uploadData.id || uploadData.job_id || uploadData.video_id || uploadData.task_id;
+    if (!jobId) {
+        throw new Error(`MemoriesAI: No job ID or description in upload response. Response: ${JSON.stringify(uploadData)}`);
+    }
+
+    console.log(`[MemoriesAI] Job ID: ${jobId} — polling for result...`);
+
+    // Poll up to 30 times with 3s intervals (90 seconds max)
+    for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+
+        const statusRes = await fetch(`${BASE_URL}/upload/${jobId}`, {
+            headers: { 'Authorization': apiKey }
+        });
+        const statusData = await statusRes.json();
+        console.log(`[MemoriesAI] Poll ${i + 1}:`, JSON.stringify(statusData));
+
+        const status = statusData.status || statusData.state;
+
+        if (status === 'FAIL' || status === 'ERROR') {
+            throw new Error(`MemoriesAI job failed: ${JSON.stringify(statusData)}`);
+        }
+
+        const description = statusData.caption || statusData.description || statusData.text || statusData.result || statusData.output;
+        if (description) {
+            return description;
+        }
+    }
+
+    throw new Error('MemoriesAI: Video analysis timed out after 90 seconds.');
 }
+
 
 // ─── OpenAI Structured Analysis from text description ─────────────────────────
 async function structureWithOpenAI(openai, videoDescription) {
