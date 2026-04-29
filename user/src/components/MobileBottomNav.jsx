@@ -60,18 +60,16 @@ export default function MobileBottomNav() {
                         <span className="text-[10px] font-medium">Ana Səhifə</span>
                     </button>
 
-                    {/* New Appeal — only when logged in */}
-                    {token && (
-                        <button
-                            onClick={() => navigate('/submit')}
-                            className="flex-1 flex flex-col items-center gap-1 py-3 text-slate-400 transition-colors"
-                        >
-                            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md">
-                                <Plus className="w-5 h-5 text-white" />
-                            </div>
-                            <span className="text-[10px] font-medium text-slate-500">Yeni Müraciət</span>
-                        </button>
-                    )}
+                    {/* New Appeal — always shown */}
+                    <button
+                        onClick={() => token ? navigate('/submit') : navigate('/login')}
+                        className="flex-1 flex flex-col items-center gap-1 py-3 text-slate-400 transition-colors"
+                    >
+                        <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md">
+                            <Plus className="w-5 h-5 text-white" />
+                        </div>
+                        <span className="text-[10px] font-medium text-slate-500">Yeni Müraciət</span>
+                    </button>
 
                     {/* Profile */}
                     <button

@@ -11,7 +11,7 @@ export default function Home() {
                     <p className="text-base sm:text-xl text-blue-100 mb-8 sm:mb-10 max-w-2xl mx-auto">
                         Yaşadığınız ərazidəki infrastruktur problemlərini bildirin. Süni intellektimiz müraciətinizi anında təhlil edir, kateqoriyalaşdırır və prioritetləşdirir.
                     </p>
-                    <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center">
+                    <div className="hidden sm:flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center">
                         <Link to="/submit" className="bg-white text-blue-700 px-6 sm:px-8 py-3 sm:py-4 rounded-xl font-bold hover:bg-blue-50 transition shadow-lg text-base sm:text-lg">
                             Müraciət Göndər
                         </Link>
