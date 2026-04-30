@@ -90,6 +90,7 @@ export default function SubmitAppeal() {
     const handleNativeCameraCapture = async (e) => {
         const selected = e.target.files[0];
         if (!selected) return;
+        setWarning('');
         setFile(selected);
         setPreview(URL.createObjectURL(selected));
         setLocation(null);
@@ -140,6 +141,7 @@ export default function SubmitAppeal() {
     const handleFileChange = async (e) => {
         const selected = e.target.files[0];
         if (!selected) return;
+        setWarning('');
         setFile(selected);
         setPreview(URL.createObjectURL(selected));
         setLocation(null);
@@ -159,6 +161,7 @@ export default function SubmitAppeal() {
         if (!file) return;
         setIsAnalyzing(true);
         setError('');
+        setWarning('');
 
         const formData = new FormData();
         formData.append('media', file);
@@ -230,7 +233,7 @@ export default function SubmitAppeal() {
         <div className="max-w-2xl mx-auto px-4 py-6 sm:py-8">
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 mb-6 sm:mb-8">Müraciət Göndər</h1>
 
-            {warning && <div className="mb-6 bg-yellow-50 text-yellow-700 border border-yellow-200 p-4 rounded-xl flex items-start gap-2"><span>⚠️</span><span>{warning}</span></div>}
+            {step === 2 && warning && <div className="mb-6 bg-yellow-50 text-yellow-700 border border-yellow-200 p-4 rounded-xl flex items-start gap-2"><span>⚠️</span><span>{warning}</span></div>}
             {error && <div className="mb-6 bg-red-50 text-red-600 p-4 rounded-xl">{error}</div>}
 
             {/* Step 1: Upload */}
@@ -315,7 +318,7 @@ export default function SubmitAppeal() {
                                 {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
                                 {isAnalyzing ? 'Təhlil edilir...' : 'Təhlil et'}
                             </button>
-                            <button onClick={() => { setFile(null); setPreview(null); setLocation(null); setLocationSource(null); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-4 rounded-xl hover:bg-slate-200 transition">
+                            <button onClick={() => { setFile(null); setPreview(null); setLocation(null); setLocationSource(null); setWarning(''); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-4 rounded-xl hover:bg-slate-200 transition">
                                 Dəyiş
                             </button>
                         </div>
@@ -392,7 +395,7 @@ export default function SubmitAppeal() {
                             {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
                             Müraciəti Göndər
                         </button>
-                        <button onClick={() => { setStep(1); setFile(null); setPreview(null); setAnalysisResult(null); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">
+                        <button onClick={() => { setStep(1); setFile(null); setPreview(null); setAnalysisResult(null); setWarning(''); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">
                             Yenidən Başla
                         </button>
                     </div>
@@ -409,7 +412,7 @@ export default function SubmitAppeal() {
                     <p className="text-slate-500 mb-8">Müraciətiniz göndərildi və hazırda admin komandamız tərəfindən nəzərdən keçirilir.</p>
                     <div className="flex gap-4 justify-center">
                         <button onClick={() => navigate('/my-appeals')} className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-700 transition">Müraciətlərimə Bax</button>
-                        <button onClick={() => { setStep(1); setFile(null); setPreview(null); setAnalysisResult(null); }} className="bg-slate-100 text-slate-700 px-6 py-3 rounded-xl font-bold hover:bg-slate-200 transition">Başqa Müraciət</button>
+                        <button onClick={() => { setStep(1); setFile(null); setPreview(null); setAnalysisResult(null); setWarning(''); }} className="bg-slate-100 text-slate-700 px-6 py-3 rounded-xl font-bold hover:bg-slate-200 transition">Başqa Müraciət</button>
                     </div>
                 </div>
             )}
