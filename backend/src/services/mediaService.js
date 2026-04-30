@@ -1,12 +1,9 @@
 import OpenAI from 'openai';
 import fs from 'fs';
-import path from 'path';
-import { execSync } from 'child_process';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
-const MEMORIES_BASE_URL = 'https://api.memories.ai/serve/api/v2';
-const MAX_UPLOAD_SIZE = 20 * 1024 * 1024; // 20MB limit for Memories AI
+const MEMORIES_BASE_URL = 'https://mavi-backend.memories.ai/serve/api/v2';
 
 // Helper to detect if file is a video by mimeType
 function isVideo(mimeType) {
@@ -22,58 +19,21 @@ function fileToDataUrl(filePath, mimeType) {
     return `data:${mimeType};base64,${base64}`;
 }
 
-// Compress video with ffmpeg if file is too large
-function compressVideoIfNeeded(filePath) {
-    const stats = fs.statSync(filePath);
-    const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
-    console.log(`[MemoriesAI] Video size: ${sizeMB}MB (limit: ${MAX_UPLOAD_SIZE / 1024 / 1024}MB)`);
-
-    if (stats.size <= MAX_UPLOAD_SIZE) {
-        return filePath; // No compression needed
-    }
-
-    const compressedPath = filePath.replace(/\.[^.]+$/, '_compressed.mp4');
-    console.log(`[MemoriesAI] Compressing video to ${compressedPath}...`);
-
-    try {
-        execSync(
-            `ffmpeg -y -i "${filePath}" -vf "scale=-2:720" -c:v libx264 -preset fast -crf 28 -b:v 1M -c:a aac -b:a 64k -movflags +faststart "${compressedPath}"`,
-            { timeout: 120000, stdio: 'pipe' }
-        );
-
-        const compressedStats = fs.statSync(compressedPath);
-        const compressedMB = (compressedStats.size / (1024 * 1024)).toFixed(1);
-        console.log(`[MemoriesAI] Compressed: ${sizeMB}MB → ${compressedMB}MB`);
-        return compressedPath;
-    } catch (err) {
-        console.warn('[MemoriesAI] ffmpeg compression failed, using original:', err.message);
-        // Clean up failed file
-        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
-        return filePath;
-    }
-}
-
-
 // ─────────────────────────────────────────────
-// Memories AI — Upload video, poll until ready, then query
+// Memories AI — Upload video, then analyze via VLM (OpenAI-compatible)
 // ─────────────────────────────────────────────
-async function analyzeVideoWithMemoriesAI(filePath, prompt) {
+async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
     const apiKey = process.env.MEMORIES_AI_API_KEY;
     if (!apiKey) throw new Error('MEMORIES_AI_API_KEY is not set');
 
-    const authHeaders = { Authorization: apiKey };
-
-    // Compress if needed
-    const uploadPath = compressVideoIfNeeded(filePath);
-
-    // Step 1: Upload the video
-    console.log('[MemoriesAI] Uploading video:', uploadPath);
+    // Step 1: Upload the video file to get asset_id
+    console.log('[MemoriesAI] Uploading video:', filePath);
     const form = new FormData();
-    form.append('file', fs.createReadStream(uploadPath));
+    form.append('file', fs.createReadStream(filePath));
 
     const uploadRes = await fetch(`${MEMORIES_BASE_URL}/upload`, {
         method: 'POST',
-        headers: { ...authHeaders, ...form.getHeaders() },
+        headers: { Authorization: apiKey, ...form.getHeaders() },
         body: form
     });
 
@@ -85,73 +45,103 @@ async function analyzeVideoWithMemoriesAI(filePath, prompt) {
     }
 
     const uploadData = JSON.parse(uploadText);
-
-    // Step 2: Query the video with the prompt
-    // Try to use the query endpoint first, fallback to chat
-    console.log('[MemoriesAI] Querying video analysis...');
-    
-    // Try /query endpoint
-    const queryRes = await fetch(`${MEMORIES_BASE_URL}/query`, {
-        method: 'POST',
-        headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            file: uploadData?.data?.file || uploadData?.data?.fileName || uploadData?.data?.url,
-            query: prompt,
-            ...(uploadData?.data?.videoNo && { videoNo: uploadData.data.videoNo }),
-            ...(uploadData?.data?.id && { id: uploadData.data.id })
-        })
-    });
-
-    const queryText = await queryRes.text();
-    console.log('[MemoriesAI] Query response:', queryText);
-
-    if (!queryRes.ok) {
-        // Fallback: try /chat endpoint
-        console.log('[MemoriesAI] /query failed, trying /chat...');
-        const chatRes = await fetch(`${MEMORIES_BASE_URL}/chat`, {
-            method: 'POST',
-            headers: { ...authHeaders, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                file: uploadData?.data?.file || uploadData?.data?.fileName || uploadData?.data?.url,
-                query: prompt,
-                ...(uploadData?.data?.videoNo && { videoNo: uploadData.data.videoNo }),
-                ...(uploadData?.data?.id && { id: uploadData.data.id })
-            })
-        });
-
-        const chatText = await chatRes.text();
-        console.log('[MemoriesAI] Chat response:', chatText);
-
-        if (!chatRes.ok) {
-            throw new Error(`MemoriesAI query failed (${chatRes.status}): ${chatText}`);
-        }
-
-        const chatData = JSON.parse(chatText);
-        const chatAnswer = chatData?.data?.answer || chatData?.data?.response || chatData?.answer || chatData?.response || chatData?.result || '';
-        if (!chatAnswer) throw new Error(`MemoriesAI: Empty answer: ${chatText}`);
-        return chatAnswer;
+    if (!uploadData?.success || !uploadData?.data?.asset_id) {
+        throw new Error(`MemoriesAI upload failed: ${uploadText}`);
     }
 
-    const queryData = JSON.parse(queryText);
-    const answerText = queryData?.data?.answer || queryData?.data?.response || queryData?.answer || queryData?.response || queryData?.result || '';
+    const assetId = uploadData.data.asset_id;
+    console.log('[MemoriesAI] Got asset_id:', assetId);
+
+    // Step 2: Wait for upload processing to complete
+    // Check metadata until upload_status is SUCCESS
+    console.log('[MemoriesAI] Checking upload status...');
+    const MAX_POLL = 30;
+    const POLL_INTERVAL = 3000;
+
+    for (let poll = 1; poll <= MAX_POLL; poll++) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL));
+
+        try {
+            const metaRes = await fetch(`${MEMORIES_BASE_URL}/metadata/${assetId}`, {
+                headers: { Authorization: apiKey }
+            });
+
+            if (metaRes.ok) {
+                const metaData = await metaRes.json();
+                const status = metaData?.data?.upload_status || '';
+                console.log(`[MemoriesAI] Poll ${poll}: upload_status = ${status}`);
+
+                if (status === 'SUCCESS') break;
+                if (status === 'FAILED') throw new Error('MemoriesAI: Video upload processing FAILED');
+            }
+        } catch (err) {
+            if (err.message.includes('FAILED')) throw err;
+            console.warn(`[MemoriesAI] Status check error (poll ${poll}):`, err.message);
+        }
+
+        if (poll === MAX_POLL) {
+            console.warn('[MemoriesAI] Polling timed out, proceeding anyway...');
+        }
+    }
+
+    // Step 3: Use VLM endpoint (OpenAI-compatible) to analyze the video
+    // The VLM endpoint uses the same OpenAI chat.completions format
+    console.log('[MemoriesAI] Analyzing video via VLM...');
+
+    const memoriesClient = new OpenAI({
+        apiKey: apiKey,
+        baseURL: `${MEMORIES_BASE_URL}/vu`
+    });
+
+    const response = await memoriesClient.chat.completions.create({
+        model: 'gemini:gemini-2.5-flash',
+        messages: [
+            {
+                role: 'system',
+                content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze a video.'
+            },
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: prompt },
+                    {
+                        type: 'input_file',
+                        file_uri: `asset://${assetId}`,
+                        mime_type: mimeType || 'video/mp4'
+                    }
+                ]
+            }
+        ],
+        temperature: 0.3,
+        max_tokens: 2000,
+        n: 1,
+        stream: false
+    });
+
+    // Response format: { choices: [{ text: "..." }] }
+    const answerText = response?.choices?.[0]?.text
+        || response?.choices?.[0]?.message?.content
+        || '';
+
+    console.log('[MemoriesAI] VLM response:', answerText);
+
     if (!answerText) {
-        throw new Error(`MemoriesAI: Empty answer from query: ${queryText}`);
+        throw new Error(`MemoriesAI VLM returned empty response: ${JSON.stringify(response)}`);
     }
 
     return answerText;
 }
 
-
 // ─────────────────────────────────────────────
 // ANALYZE APPEAL MEDIA (image → OpenAI, video → MemoriesAI)
 // ─────────────────────────────────────────────
 const ANALYZE_PROMPT = `
-Siz Azərbaycanda yerli hökumət "ASAN" vətəndaş müraciət sisteminin AI köməkçisisiniz.
-Bu şəkil/videonu (bildirilmiş problem) analiz edin.
+You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
+Analyze this image (or video frame) of a reported problem. 
 
-VACIB: "title" və "description" sahələri MÜTLƏQ Azərbaycan dilində yazılmalıdır.
+IMPORTANT: The "title" and "description" fields MUST be written in Azerbaijani language (Azərbaycan dili).
 
-Siz YALNIZ aşağıdakı strukturla düzgün JSON obyekti qaytarmalısınız, markdown formatlaşdırma və ya əlavə mətn olmadan:
+You MUST return ONLY a valid JSON object matching exactly this structure, no markdown formatting or extra text:
 {
   "no_problem_detected": true/false,
   "title": "Problemi ümumiləşdirən qısa 3-5 sözdən ibarət başlıq (Azərbaycan dilində)",
@@ -159,34 +149,35 @@ Siz YALNIZ aşağıdakı strukturla düzgün JSON obyekti qaytarmalısınız, ma
   "category": "One of: Roads & Transport, Utilities, Parks & Environment, Public Safety, Waste Management, Building & Infrastructure, Other",
   "priority": "One of: Low, Medium, High, Critical",
   "location": {
-     "gps_confidence": 0.5,
-     "visual_landmarks": ["landmark1", "landmark2"]
+     "gps_confidence": Number between 0 and 1,
+     "visual_landmarks": ["Array", "of", "strings"]
   },
   "confidence_scores": {
-     "description": 0.9,
-     "category": 0.9,
-     "priority": 0.8
+     "description": Number between 0 and 1,
+     "category": Number between 0 and 1,
+     "priority": Number between 0 and 1
   }
 }
 
-Qaydalar:
-- Şəkil/video ictimai infrastruktur problemi, şəhər məsələsi göstərmirsə (məs: selfie, yemək, heyvanlar, şəxsi ev fotoları), "no_problem_detected" true qoyun. Bu halda digər sahələri placeholder ilə doldurun.
-- Real ictimai problem varsa (sınıq yollar, zədələnmiş infrastruktur, tullantı, daşqın, təhlükəli şərait), "no_problem_detected" false qoyun.
-- "title" və "description" MÜTLƏQƏTDİ Azərbaycan dilində olmalıdır.
-- "description" ən azı 3-5 cümlə olmalıdır.
-- "category" mütləq siyahıdan (İngilis dilində) seçilməlidir.
-- "priority" mütləq siyahıdan (İngilis dilində) seçilməlidir.
-- Bütün sahələr HƏMIŞƏ doldurulmalıdır.
+Rules:
+- If the image does NOT show any public infrastructure problem, city issue, or something that ASAN public services can resolve (e.g. selfies, food, animals, random objects, indoor personal photos), set "no_problem_detected" to true. In that case, still fill in the other fields with placeholder values.
+- If the image DOES show a real public problem (broken roads, damaged infrastructure, waste, flooding, unsafe conditions, etc.), set "no_problem_detected" to false.
+- The "title" and "description" MUST be in Azerbaijani language.
+- The "description" MUST be detailed and comprehensive, at least 3-5 sentences long. Describe what you see, the nature of the problem, its potential impact, and urgency.
+- Do not hallucinate. If completely unclear, set confidence scores very low.
+- "category" must be strictly from the listed options (keep in English).
+- "priority" must be strictly from the listed options (keep in English).
+- You MUST always return ALL fields in the JSON structure. Never omit any field.
 `;
 
 export const analyzeAppealMedia = async (filePath, mimeType) => {
     const MAX_RETRIES = 3;
 
     if (isVideo(mimeType)) {
-        // ── VIDEO: Use Memories AI ──
+        // ── VIDEO: Use Memories AI VLM ──
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                const rawAnswer = await analyzeVideoWithMemoriesAI(filePath, ANALYZE_PROMPT);
+                const rawAnswer = await analyzeVideoWithMemoriesAI(filePath, mimeType, ANALYZE_PROMPT);
 
                 // Try to parse JSON from the answer
                 const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
@@ -263,16 +254,23 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
   
   SAME LOCATION GUIDELINES (VERY IMPORTANT):
   - The "Before" and "After" photos will almost ALWAYS be taken from DIFFERENT camera angles, positions, distances, and perspectives. This is COMPLETELY NORMAL and expected — do NOT treat different angles as evidence of a different location.
-  - Focus on shared environmental features: nearby buildings, street signs, road markings, curbs, sidewalks, walls, fences, trees, poles, utility infrastructure, terrain shape, and surrounding architecture.
+  - Focus on shared environmental features to determine same location: nearby buildings, street signs, road markings, curbs, sidewalks, walls, fences, trees, poles, utility infrastructure, terrain shape, and surrounding architecture.
   - Even if only a FEW recognizable features overlap between the two images, consider them the same location.
   - Different lighting conditions (day vs evening, sunny vs cloudy) do NOT mean different location.
-  - Only mark same_location as FALSE if the surroundings are clearly and obviously from a completely different place with no shared features at all.
+  - Different zoom levels or crops do NOT mean different location.
+  - Only mark same_location as FALSE if the surroundings, environment, and context are clearly and obviously from a completely different place with no shared features at all.
   
-  AI-GENERATED IMAGE DETECTION GUIDELINES:
-  - Look for unnaturally smooth or perfect surfaces
-  - Check for warped or distorted edges
+  AI-GENERATED IMAGE DETECTION GUIDELINES (apply ALL of these):
+  - Look for unnaturally smooth or perfect surfaces (real pavements have imperfections, cracks, dirt, stains)
+  - Check for warped or distorted edges, especially around objects meeting backgrounds
   - Look for inconsistent lighting, shadows that don't match light sources
-  - Real photos have noise/grain — AI images are often too clean
+  - Check for impossible or unrealistic geometry in bricks, tiles, or pavement patterns
+  - Look for blurry or smeared areas, especially at object boundaries
+  - Check if textures repeat unnaturally or have "dreamy" quality
+  - Real photos have noise/grain, especially in low light - AI images are often too clean
+  - Check for AI watermarks or artifacts in corners (e.g., small symbols)
+  - If the "After" image looks "too perfect" or "too clean" compared to the "Before", it is likely AI-generated
+  - Compare the photographic style: real phone photos have lens distortion, natural white balance variation
   - If there is ANY doubt, mark is_ai_generated as TRUE. Err on the side of caution.
   
   You MUST return ONLY a valid JSON object matching exactly this structure:
@@ -280,9 +278,9 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
     "same_location": true/false,
     "issue_resolved": true/false,
     "is_ai_generated": true/false,
-    "mismatch_warning": true/false,
+    "mismatch_warning": true/false (true if they are not the same location OR the issue isn't resolved OR it is AI generated),
     "confidence": Number between 0 and 1,
-    "ai_detection_reason": "Brief explanation"
+    "ai_detection_reason": "Brief explanation of why the image was or wasn't flagged as AI-generated"
   }
   `;
 
@@ -309,7 +307,7 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
         const responseText = response.choices[0].message.content;
         return JSON.parse(responseText);
     } catch (error) {
-        console.error('OpenAI Verify Error:', error);
-        throw new Error(error.message || 'Failed to verify media via OpenAI.');
+        console.error("OpenAI Verify Error:", error);
+        throw new Error(error.message || "Failed to verify media via OpenAI.");
     }
 };
