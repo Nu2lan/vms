@@ -24,6 +24,16 @@ async function analyzeVideoWithMemoriesAI(filePath, mimeType) {
 
     const BASE_URL = 'https://mavi-backend.memories.ai/serve/api/v2';
 
+    // Check file size — memories.ai has an upload size limit
+    const fileSizeBytes = fs.statSync(filePath).size;
+    const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(1);
+    console.log(`[MemoriesAI] File size: ${fileSizeMB} MB`);
+
+    const MAX_SIZE_MB = 50;
+    if (fileSizeBytes > MAX_SIZE_MB * 1024 * 1024) {
+        throw new Error(`Video faylı çox böyükdür (${fileSizeMB} MB). Zəhmət olmasa ${MAX_SIZE_MB} MB-dan kiçik bir video yükləyin (təxminən 30-60 saniyəlik qeyd).`);
+    }
+
     console.log('[MemoriesAI] Uploading video for analysis...');
 
     const form = new FormData();
