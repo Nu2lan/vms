@@ -1,22 +1,10 @@
 // src/services/mediaService.js
-import axios from "axios";
-import FormData from "form-data";
 import fs from "fs";
-import path from "path";
 import OpenAI from "openai";
+import { TwelveLabs } from "twelvelabs-js";
 
-const MAVI_BASE_URL = "https://mavi-backend.memories.ai/serve/api/v2";
-const METADATA_POLL_MS = 2000;
-const METADATA_MAX_WAIT_MS = 120000;
-const DEFAULT_VLM_MODEL = "gemini:gemini-2.5-flash";
-
-function memoriesAuthHeader() {
-    const key = process.env.MEMORIES_AI_API_KEY;
-    if (!key?.trim()) {
-        throw new Error("MEMORIES_AI_API_KEY is not configured");
-    }
-    return { Authorization: key.trim() };
-}
+const TWELVELABS_POLL_INTERVAL_MS = 5000;
+const TWELVELABS_MAX_WAIT_MS = 10 * 60 * 1000;
 
 function isVideo(mimeType) {
     return typeof mimeType === "string" && mimeType.startsWith("video/");
@@ -30,150 +18,88 @@ function fileToDataUrl(filePath, mimeType) {
     return `data:${mimeType};base64,${base64}`;
 }
 
-function unwrapMemoriesError(err) {
-    const d = err.response?.data;
-    if (d && typeof d === "object") {
-        return d.msg || d.message || JSON.stringify(d);
+function getTwelveLabsClient() {
+    const key = process.env.TWELVELABS_API_KEY;
+    if (!key?.trim()) {
+        throw new Error("TWELVELABS_API_KEY is not configured");
     }
-    return err.message || "Memories.ai API request failed";
+    return new TwelveLabs({ apiKey: key.trim() });
 }
 
-async function uploadVideoAsset(filePath) {
-    const originalFilename = path.basename(filePath);
-    const signedUrlRes = await axios.post(
-        `${MAVI_BASE_URL}/upload/signed-url`,
-        { original_filename: originalFilename },
-        {
-            headers: {
-                ...memoriesAuthHeader(),
-                "Content-Type": "application/json",
-            },
-        }
-    );
-
-    const signedBody = signedUrlRes.data;
-    const assetId = signedBody?.data?.asset_id;
-    const signedUrl = signedBody?.data?.signed_url;
-    if (!assetId || !signedUrl) {
-        throw new Error(signedBody?.msg || "Failed to get upload signed URL");
+function extractJsonFromText(text, provider = "AI") {
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+        throw new Error(`No JSON found in ${provider} response`);
     }
-
-    const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-
-    await axios.post(signedUrl, form, {
-        headers: {
-            ...form.getHeaders(),
-        },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-    });
-
-    return { assetId, fileUri: signedUrl };
+    return JSON.parse(jsonMatch[0]);
 }
 
-async function waitForAssetReady(assetId) {
+async function waitForAssetReady(client, assetId) {
     const started = Date.now();
-    while (Date.now() - started < METADATA_MAX_WAIT_MS) {
-        const res = await axios.get(`${MAVI_BASE_URL}/${assetId}/metadata`, {
-            headers: memoriesAuthHeader(),
-        });
-        const body = res.data;
-        const resource = body?.data?.resource?.[0];
-        const status = resource?.upload_status;
-        if (status === "SUCCESS") {
-            return;
+    let asset = await client.assets.retrieve(assetId);
+    while (asset.status !== "ready" && asset.status !== "failed") {
+        if (Date.now() - started > TWELVELABS_MAX_WAIT_MS) {
+            throw new Error(`Timed out waiting for TwelveLabs asset ${assetId} to be ready`);
         }
-        if (status === "FAILED") {
-            throw new Error("Memories.ai upload processing failed for asset");
-        }
-        await new Promise((r) => setTimeout(r, METADATA_POLL_MS));
+        await new Promise((resolve) => setTimeout(resolve, TWELVELABS_POLL_INTERVAL_MS));
+        asset = await client.assets.retrieve(assetId);
     }
-    throw new Error("Timed out waiting for Memories.ai asset to be ready");
+    if (asset.status === "failed") {
+        throw new Error(`TwelveLabs asset processing failed: id=${assetId}`);
+    }
 }
 
-function extractVlmText(data) {
-    const choice = data?.choices?.[0];
-    if (!choice) {
-        return "";
+async function waitForAnalyzeTask(client, taskId) {
+    const started = Date.now();
+    let task = await client.analyzeAsync.tasks.retrieve(taskId);
+    while (task.status !== "ready" && task.status !== "failed") {
+        if (Date.now() - started > TWELVELABS_MAX_WAIT_MS) {
+            throw new Error(`Timed out waiting for TwelveLabs analyze task ${taskId}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, TWELVELABS_POLL_INTERVAL_MS));
+        task = await client.analyzeAsync.tasks.retrieve(taskId);
     }
-    if (typeof choice.text === "string") {
-        return choice.text;
+    if (task.status === "failed") {
+        throw new Error(`TwelveLabs analyze task failed: id=${taskId}`);
     }
-    if (choice.message?.content != null) {
-        return String(choice.message.content);
-    }
-    return "";
+    return task;
 }
 
 /**
- * Upload video to MAVI, then run Gemini VLM with the returned asset_id as file reference.
+ * Video analysis via TwelveLabs async API.
  */
-async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
-    const model = process.env.MEMORIES_VLM_MODEL?.trim() || DEFAULT_VLM_MODEL;
+async function analyzeVideoWithTwelveLabs(filePath, prompt) {
+    const client = getTwelveLabsClient();
 
-    const { assetId, fileUri } = await uploadVideoAsset(filePath);
-    console.log("[MemoriesAI] Uploaded asset_id:", assetId);
-    await waitForAssetReady(assetId);
+    const asset = await client.assets.create({
+        method: "direct",
+        file: fs.createReadStream(filePath),
+    });
+    const assetId = asset?.id;
+    if (!assetId) {
+        throw new Error("TwelveLabs asset upload failed: missing asset id");
+    }
+    await waitForAssetReady(client, assetId);
 
-    const userContent = [{ type: "text", text: prompt }];
-    if (model.startsWith("nova:")) {
-        userContent.push({
-            type: "video_url",
-            video_url: { url: fileUri },
-        });
-    } else {
-        userContent.push({
-            type: "input_file",
-            file_uri: fileUri,
-            mime_type: mimeType || "video/mp4",
-        });
+    const taskResponse = await client.analyzeAsync.tasks.create({
+        video: { type: "asset_id", assetId },
+        prompt,
+    });
+    const taskId = taskResponse?.taskId;
+    if (!taskId) {
+        throw new Error("TwelveLabs analyze task creation failed: missing task id");
     }
 
-    const payload = {
-        model,
-        messages: [
-            {
-                role: "system",
-                content:
-                    "You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze a video.",
-            },
-            {
-                role: "user",
-                content: userContent,
-            },
-        ],
-        max_tokens: 2000,
-        temperature: 0.3,
-    };
-
-    let res;
-    try {
-        res = await axios.post(`${MAVI_BASE_URL}/vu/chat/completions`, payload, {
-            headers: {
-                ...memoriesAuthHeader(),
-                "Content-Type": "application/json",
-            },
-        });
-    } catch (err) {
-        console.error("[MemoriesAI] VLM 4xx/5xx details:", err.response?.data || err.message);
-        throw err;
+    const task = await waitForAnalyzeTask(client, taskId);
+    const resultText = task?.result?.data;
+    if (!resultText || typeof resultText !== "string") {
+        throw new Error("Empty response from TwelveLabs video analysis");
     }
-
-    const body = res.data;
-    if (body?.failed === true || (body?.code != null && body.code !== 200)) {
-        throw new Error(body?.msg || "VLM request failed");
-    }
-
-    const text = extractVlmText(body);
-    if (!text?.trim()) {
-        throw new Error("Empty response from Memories.ai VLM");
-    }
-    return text;
+    return resultText;
 }
 
 // ─────────────────────────────────────────────
-// ANALYZE APPEAL MEDIA (image → OpenAI, video → MemoriesAI)
+// ANALYZE APPEAL MEDIA (image → OpenAI, video → TwelveLabs)
 // ─────────────────────────────────────────────
 const ANALYZE_PROMPT = `
 You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
@@ -216,20 +142,16 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
     if (isVideo(mimeType)) {
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                const rawAnswer = await analyzeVideoWithMemoriesAI(filePath, mimeType, ANALYZE_PROMPT);
-
-                const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) throw new Error("No JSON found in MemoriesAI response");
-
-                const result = JSON.parse(jsonMatch[0]);
+                const rawAnswer = await analyzeVideoWithTwelveLabs(filePath, ANALYZE_PROMPT);
+                const result = extractJsonFromText(rawAnswer, "TwelveLabs");
                 if (result.title && result.description && result.category && result.priority) {
                     return result;
                 }
-                console.warn(`[MemoriesAI] Attempt ${attempt}: Missing required fields, retrying...`);
+                console.warn(`[TwelveLabs] Attempt ${attempt}: Missing required fields, retrying...`);
             } catch (error) {
-                console.error(`[MemoriesAI] Attempt ${attempt} error:`, error.message);
+                console.error(`[TwelveLabs] Attempt ${attempt} error:`, error.message);
                 if (attempt === MAX_RETRIES) {
-                    throw new Error(unwrapMemoriesError(error) || "Video analysis failed via MemoriesAI.");
+                    throw new Error(error.message || "Video analysis failed via TwelveLabs.");
                 }
             }
         }
