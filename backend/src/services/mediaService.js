@@ -1,10 +1,15 @@
 // src/services/mediaService.js
 import fs from "fs";
+import os from "os";
+import path from "path";
 import OpenAI from "openai";
-import { TwelveLabs } from "twelvelabs-js";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
 
-const TWELVELABS_POLL_INTERVAL_MS = 5000;
-const TWELVELABS_MAX_WAIT_MS = 10 * 60 * 1000;
+if (ffmpegPath) {
+    ffmpeg.setFfmpegPath(ffmpegPath);
+}
+const VIDEO_FRAME_COUNT = 6;
 
 function isVideo(mimeType) {
     return typeof mimeType === "string" && mimeType.startsWith("video/");
@@ -18,14 +23,6 @@ function fileToDataUrl(filePath, mimeType) {
     return `data:${mimeType};base64,${base64}`;
 }
 
-function getTwelveLabsClient() {
-    const key = process.env.TWELVELABS_API_KEY;
-    if (!key?.trim()) {
-        throw new Error("TWELVELABS_API_KEY is not configured");
-    }
-    return new TwelveLabs({ apiKey: key.trim() });
-}
-
 function extractJsonFromText(text, provider = "AI") {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -34,72 +31,101 @@ function extractJsonFromText(text, provider = "AI") {
     return JSON.parse(jsonMatch[0]);
 }
 
-async function waitForAssetReady(client, assetId) {
-    const started = Date.now();
-    let asset = await client.assets.retrieve(assetId);
-    while (asset.status !== "ready" && asset.status !== "failed") {
-        if (Date.now() - started > TWELVELABS_MAX_WAIT_MS) {
-            throw new Error(`Timed out waiting for TwelveLabs asset ${assetId} to be ready`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, TWELVELABS_POLL_INTERVAL_MS));
-        asset = await client.assets.retrieve(assetId);
-    }
-    if (asset.status === "failed") {
-        throw new Error(`TwelveLabs asset processing failed: id=${assetId}`);
-    }
+function listFrameFiles(framesDir) {
+    return fs.readdirSync(framesDir)
+        .filter((f) => f.startsWith("frame-") && f.endsWith(".jpg"))
+        .sort()
+        .map((f) => path.join(framesDir, f));
 }
 
-async function waitForAnalyzeTask(client, taskId) {
-    const started = Date.now();
-    let task = await client.analyzeAsync.tasks.retrieve(taskId);
-    while (task.status !== "ready" && task.status !== "failed") {
-        if (Date.now() - started > TWELVELABS_MAX_WAIT_MS) {
-            throw new Error(`Timed out waiting for TwelveLabs analyze task ${taskId}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, TWELVELABS_POLL_INTERVAL_MS));
-        task = await client.analyzeAsync.tasks.retrieve(taskId);
+async function extractVideoFrames(filePath, frameCount = VIDEO_FRAME_COUNT) {
+    const framesDir = path.join(os.tmpdir(), `appeal-frames-${Date.now()}`);
+    fs.mkdirSync(framesDir, { recursive: true });
+    const outputPattern = path.join(framesDir, "frame-%02d.jpg");
+
+    await new Promise((resolve, reject) => {
+        ffmpeg(filePath)
+            .outputOptions(["-vf", `fps=1`, "-frames:v", String(frameCount), "-q:v", "2"])
+            .output(outputPattern)
+            .on("end", resolve)
+            .on("error", reject)
+            .run();
+    });
+
+    const frames = listFrameFiles(framesDir);
+    if (frames.length === 0) {
+        throw new Error("Failed to extract frames from video");
     }
-    if (task.status === "failed") {
-        throw new Error(`TwelveLabs analyze task failed: id=${taskId}`);
-    }
-    return task;
+    return { framesDir, frames };
 }
 
 /**
- * Video analysis via TwelveLabs async API.
+ * Analyze video using OpenAI frame-by-frame then summarize.
  */
-async function analyzeVideoWithTwelveLabs(filePath, prompt) {
-    const client = getTwelveLabsClient();
+async function analyzeVideoWithOpenAIFrames(filePath, prompt) {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const { framesDir, frames } = await extractVideoFrames(filePath, VIDEO_FRAME_COUNT);
 
-    const asset = await client.assets.create({
-        method: "direct",
-        file: fs.createReadStream(filePath),
-    });
-    const assetId = asset?.id;
-    if (!assetId) {
-        throw new Error("TwelveLabs asset upload failed: missing asset id");
-    }
-    await waitForAssetReady(client, assetId);
+    try {
+        const frameObservations = [];
+        for (let i = 0; i < frames.length; i++) {
+            const frameDataUrl = fileToDataUrl(frames[i], "image/jpeg");
+            const frameResponse = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: "You analyze one video frame. Return concise factual observations only.",
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: `Frame ${i + 1}/${frames.length}: identify visible civic/public issues, severity clues, location landmarks. Keep under 5 short bullet points.` },
+                            { type: "image_url", image_url: { url: frameDataUrl, detail: "high" } },
+                        ],
+                    },
+                ],
+                max_tokens: 300,
+            });
 
-    const taskResponse = await client.analyzeAsync.tasks.create({
-        video: { type: "asset_id", assetId },
-        prompt,
-    });
-    const taskId = taskResponse?.taskId;
-    if (!taskId) {
-        throw new Error("TwelveLabs analyze task creation failed: missing task id");
-    }
+            const obs = frameResponse.choices?.[0]?.message?.content?.trim() || "";
+            frameObservations.push(`Frame ${i + 1}:\n${obs}`);
+        }
 
-    const task = await waitForAnalyzeTask(client, taskId);
-    const resultText = task?.result?.data;
-    if (!resultText || typeof resultText !== "string") {
-        throw new Error("Empty response from TwelveLabs video analysis");
+        const summaryResponse = await openai.chat.completions.create({
+            model: "gpt-4o",
+            response_format: { type: "json_object" },
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a JSON-only assistant. Always respond with valid JSON containing all requested fields.",
+                },
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: `${prompt}\n\nUse these frame-by-frame observations as your video context:\n${frameObservations.join("\n\n")}`,
+                        },
+                    ],
+                },
+            ],
+            max_tokens: 2000,
+        });
+
+        return summaryResponse.choices?.[0]?.message?.content || "";
+    } finally {
+        if (fs.existsSync(framesDir)) {
+            for (const file of fs.readdirSync(framesDir)) {
+                fs.unlinkSync(path.join(framesDir, file));
+            }
+            fs.rmdirSync(framesDir);
+        }
     }
-    return resultText;
 }
 
 // ─────────────────────────────────────────────
-// ANALYZE APPEAL MEDIA (image → OpenAI, video → TwelveLabs)
+// ANALYZE APPEAL MEDIA (image → OpenAI, video → OpenAI frames)
 // ─────────────────────────────────────────────
 const ANALYZE_PROMPT = `
 You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
@@ -142,16 +168,16 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
     if (isVideo(mimeType)) {
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                const rawAnswer = await analyzeVideoWithTwelveLabs(filePath, ANALYZE_PROMPT);
-                const result = extractJsonFromText(rawAnswer, "TwelveLabs");
+                const rawAnswer = await analyzeVideoWithOpenAIFrames(filePath, ANALYZE_PROMPT);
+                const result = extractJsonFromText(rawAnswer, "OpenAI");
                 if (result.title && result.description && result.category && result.priority) {
                     return result;
                 }
-                console.warn(`[TwelveLabs] Attempt ${attempt}: Missing required fields, retrying...`);
+                console.warn(`[OpenAI-Video] Attempt ${attempt}: Missing required fields, retrying...`);
             } catch (error) {
-                console.error(`[TwelveLabs] Attempt ${attempt} error:`, error.message);
+                console.error(`[OpenAI-Video] Attempt ${attempt} error:`, error.message);
                 if (attempt === MAX_RETRIES) {
-                    throw new Error(error.message || "Video analysis failed via TwelveLabs.");
+                    throw new Error(error.message || "Video analysis failed via OpenAI.");
                 }
             }
         }
