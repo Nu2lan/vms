@@ -2,130 +2,155 @@
 import axios from "axios";
 import FormData from "form-data";
 import fs from "fs";
+import OpenAI from "openai";
 
-class MemoriesAIService {
-    constructor() {
-        this.apiKey = process.env.MEMORIES_AI_API_KEY;
-        this.baseUrl = "https://api.memories.ai/v1";
-        this.pollInterval = 2000;
+const MAVI_BASE_URL = "https://mavi-backend.memories.ai/serve/api/v2";
+const METADATA_POLL_MS = 2000;
+const METADATA_MAX_WAIT_MS = 120000;
+const DEFAULT_VLM_MODEL = "gemini:gemini-2.5-flash";
+
+function memoriesAuthHeader() {
+    const key = process.env.MEMORIES_AI_API_KEY;
+    if (!key?.trim()) {
+        throw new Error("MEMORIES_AI_API_KEY is not configured");
     }
+    return { Authorization: key.trim() };
+}
 
-    /** ---------------------
-     *  Base Request Wrapper
-     * --------------------- */
-    async request(method, url, data, headers = {}) {
-        try {
-            const res = await axios({
-                method,
-                url: `${this.baseUrl}${url}`,
-                headers: {
-                    Authorization: `Bearer ${this.apiKey}`,
-                    ...headers,
-                },
-                data,
-            });
+function isVideo(mimeType) {
+    return typeof mimeType === "string" && mimeType.startsWith("video/");
+}
 
-            return res.data;
-        } catch (err) {
-            console.error("[MemoriesAI] Error:", err.response?.data || err.message);
-            throw new Error(err.response?.data?.message || "MemoriesAI API request failed");
-        }
+function fileToDataUrl(filePath, mimeType) {
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Media file not found on disk: ${filePath}. Cannot perform AI verification.`);
     }
+    const base64 = Buffer.from(fs.readFileSync(filePath)).toString("base64");
+    return `data:${mimeType};base64,${base64}`;
+}
 
-    /** ---------------------
-     *  Step 1 — Upload file
-     * --------------------- */
-    async uploadMedia(filePath) {
-        const form = new FormData();
-        form.append("file", fs.createReadStream(filePath));
-
-        const res = await this.request(
-            "POST",
-            "/upload",
-            form,
-            form.getHeaders()
-        );
-
-        const fileUrl = res?.data?.fileUrl;
-
-        if (!fileUrl) {
-            throw new Error("Upload failed: No fileUrl returned");
-        }
-
-        return fileUrl;
+function unwrapMemoriesError(err) {
+    const d = err.response?.data;
+    if (d && typeof d === "object") {
+        return d.msg || d.message || JSON.stringify(d);
     }
+    return err.message || "Memories.ai API request failed";
+}
 
-    /** -------------------------------
-     *  Step 2 — Create VLM task
-     * ------------------------------- */
-    async createVisionTask(fileUrl, prompt) {
-        const payload = {
-            model: "vlm",
-            input: [
-                {
-                    role: "user",
-                    content: [
-                        { type: "input_text", text: prompt },
-                        { type: "input_image", image_url: fileUrl }
-                    ],
-                },
-            ],
-        };
+async function uploadVideoAsset(filePath) {
+    const form = new FormData();
+    form.append("file", fs.createReadStream(filePath));
 
-        const res = await this.request("POST", "/task", payload);
+    const res = await axios.post(`${MAVI_BASE_URL}/upload`, form, {
+        headers: {
+            ...memoriesAuthHeader(),
+            ...form.getHeaders(),
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+    });
 
-        const taskId = res?.data?.task_id;
-
-        if (!taskId) {
-            throw new Error("Failed to create task: No task_id returned");
-        }
-
-        return taskId;
+    const body = res.data;
+    const assetId = body?.data?.asset_id;
+    if (body?.code !== 200 && body?.success !== true) {
+        throw new Error(body?.msg || "Upload failed");
     }
+    if (!assetId) {
+        throw new Error("Upload failed: no asset_id returned");
+    }
+    return assetId;
+}
 
-    /** -------------------------------
-     *  Step 3 — Poll task status
-     * ------------------------------- */
-    async pollTask(taskId) {
-        return new Promise((resolve, reject) => {
-            const interval = setInterval(async () => {
-                try {
-                    const res = await this.request("GET", `/task/${taskId}`);
-
-                    if (res?.data?.status === "SUCCESS") {
-                        clearInterval(interval);
-                        resolve(res.data);
-                    }
-
-                    if (res?.data?.status === "FAILED") {
-                        clearInterval(interval);
-                        reject(new Error("MemoriesAI Task Failed"));
-                    }
-                } catch (err) {
-                    clearInterval(interval);
-                    reject(err);
-                }
-            }, this.pollInterval);
+async function waitForAssetReady(assetId) {
+    const started = Date.now();
+    while (Date.now() - started < METADATA_MAX_WAIT_MS) {
+        const res = await axios.get(`${MAVI_BASE_URL}/${assetId}/metadata`, {
+            headers: memoriesAuthHeader(),
         });
+        const body = res.data;
+        const resource = body?.data?.resource?.[0];
+        const status = resource?.upload_status;
+        if (status === "SUCCESS") {
+            return;
+        }
+        if (status === "FAILED") {
+            throw new Error("Memories.ai upload processing failed for asset");
+        }
+        await new Promise((r) => setTimeout(r, METADATA_POLL_MS));
+    }
+    throw new Error("Timed out waiting for Memories.ai asset to be ready");
+}
+
+function extractVlmText(data) {
+    const choice = data?.choices?.[0];
+    if (!choice) {
+        return "";
+    }
+    if (typeof choice.text === "string") {
+        return choice.text;
+    }
+    if (choice.message?.content != null) {
+        return String(choice.message.content);
+    }
+    return "";
+}
+
+/**
+ * Upload video to MAVI, then run Gemini VLM with the returned asset_id as file reference.
+ */
+async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
+    const model = process.env.MEMORIES_VLM_MODEL?.trim() || DEFAULT_VLM_MODEL;
+
+    const assetId = await uploadVideoAsset(filePath);
+    console.log("[MemoriesAI] Uploaded asset_id:", assetId);
+    await waitForAssetReady(assetId);
+
+    const payload = {
+        model,
+        messages: [
+            {
+                role: "system",
+                content:
+                    "You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze a video.",
+            },
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: prompt },
+                    {
+                        type: "input_file",
+                        file_uri: assetId,
+                        mime_type: mimeType || "video/mp4",
+                    },
+                ],
+            },
+        ],
+        max_tokens: 2000,
+        temperature: 0.3,
+        extra_body: {
+            metadata: {
+                response_mime_type: "application/json",
+            },
+        },
+    };
+
+    const res = await axios.post(`${MAVI_BASE_URL}/vu/chat/completions`, payload, {
+        headers: {
+            ...memoriesAuthHeader(),
+            "Content-Type": "application/json",
+        },
+    });
+
+    const body = res.data;
+    if (body?.failed === true || (body?.code != null && body.code !== 200)) {
+        throw new Error(body?.msg || "VLM request failed");
     }
 
-    /** -------------------------------
-     *  Master: Upload → Analyze
-     * ------------------------------- */
-    async analyzeMedia(filePath, prompt) {
-        // 1. Upload media
-        const fileUrl = await this.uploadMedia(filePath);
-        console.log("[MemoriesAI] Uploaded:", fileUrl);
-
-        // 2. Create task
-        const taskId = await this.createVisionTask(fileUrl, prompt);
-        console.log("[MemoriesAI] Task created:", taskId);
-
-        // 3. Poll until result
-        const result = await this.pollTask(taskId);
-
-        return result?.output_text || result;
+    const text = extractVlmText(body);
+    if (!text?.trim()) {
+        throw new Error("Empty response from Memories.ai VLM");
     }
+    return text;
 }
 
 // ─────────────────────────────────────────────
@@ -170,14 +195,12 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
     const MAX_RETRIES = 3;
 
     if (isVideo(mimeType)) {
-        // ── VIDEO: Use Memories AI VLM ──
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
                 const rawAnswer = await analyzeVideoWithMemoriesAI(filePath, mimeType, ANALYZE_PROMPT);
 
-                // Try to parse JSON from the answer
                 const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) throw new Error('No JSON found in MemoriesAI response');
+                if (!jsonMatch) throw new Error("No JSON found in MemoriesAI response");
 
                 const result = JSON.parse(jsonMatch[0]);
                 if (result.title && result.description && result.category && result.priority) {
@@ -186,51 +209,53 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
                 console.warn(`[MemoriesAI] Attempt ${attempt}: Missing required fields, retrying...`);
             } catch (error) {
                 console.error(`[MemoriesAI] Attempt ${attempt} error:`, error.message);
-                if (attempt === MAX_RETRIES) throw new Error(error.message || 'Video analysis failed via MemoriesAI.');
-            }
-        }
-        throw new Error('Video AI analysis failed after multiple attempts.');
-    } else {
-        // ── IMAGE: Use OpenAI GPT-4o ──
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const imageUrl = fileToDataUrl(filePath, mimeType);
-
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                const response = await openai.chat.completions.create({
-                    model: 'gpt-4o',
-                    response_format: { type: 'json_object' },
-                    messages: [
-                        {
-                            role: 'system',
-                            content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze an image.'
-                        },
-                        {
-                            role: 'user',
-                            content: [
-                                { type: 'text', text: ANALYZE_PROMPT },
-                                { type: 'image_url', image_url: { url: imageUrl } }
-                            ]
-                        }
-                    ],
-                    max_tokens: 2000
-                });
-
-                const responseText = response.choices[0].message.content;
-                console.log(`[OpenAI] Attempt ${attempt} raw response:`, responseText);
-                const result = JSON.parse(responseText);
-
-                if (result.title && result.description && result.category && result.priority) {
-                    return result;
+                if (attempt === MAX_RETRIES) {
+                    throw new Error(unwrapMemoriesError(error) || "Video analysis failed via MemoriesAI.");
                 }
-                console.warn(`[OpenAI] Attempt ${attempt}: Missing required fields, retrying...`);
-            } catch (error) {
-                console.error(`[OpenAI] Attempt ${attempt} error:`, error.message);
-                if (attempt === MAX_RETRIES) throw new Error(error.message || 'Image analysis failed via OpenAI.');
             }
         }
-        throw new Error('AI analysis failed after multiple attempts. Please try again.');
+        throw new Error("Video AI analysis failed after multiple attempts.");
     }
+
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const imageUrl = fileToDataUrl(filePath, mimeType);
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: "gpt-4o",
+                response_format: { type: "json_object" },
+                messages: [
+                    {
+                        role: "system",
+                        content:
+                            "You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze an image.",
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: ANALYZE_PROMPT },
+                            { type: "image_url", image_url: { url: imageUrl } },
+                        ],
+                    },
+                ],
+                max_tokens: 2000,
+            });
+
+            const responseText = response.choices[0].message.content;
+            console.log(`[OpenAI] Attempt ${attempt} raw response:`, responseText);
+            const result = JSON.parse(responseText);
+
+            if (result.title && result.description && result.category && result.priority) {
+                return result;
+            }
+            console.warn(`[OpenAI] Attempt ${attempt}: Missing required fields, retrying...`);
+        } catch (error) {
+            console.error(`[OpenAI] Attempt ${attempt} error:`, error.message);
+            if (attempt === MAX_RETRIES) throw new Error(error.message || "Image analysis failed via OpenAI.");
+        }
+    }
+    throw new Error("AI analysis failed after multiple attempts. Please try again.");
 };
 
 // ─────────────────────────────────────────────
@@ -285,19 +310,19 @@ export const verifyResolutionMedia = async (originalFilePath, originalMimeType, 
 
     try {
         const response = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            response_format: { type: 'json_object' },
+            model: "gpt-4o",
+            response_format: { type: "json_object" },
             messages: [
                 {
-                    role: 'user',
+                    role: "user",
                     content: [
-                        { type: 'text', text: prompt },
-                        { type: 'image_url', image_url: { url: originalUrl, detail: 'high' } },
-                        { type: 'image_url', image_url: { url: resolutionUrl, detail: 'high' } }
-                    ]
-                }
+                        { type: "text", text: prompt },
+                        { type: "image_url", image_url: { url: originalUrl, detail: "high" } },
+                        { type: "image_url", image_url: { url: resolutionUrl, detail: "high" } },
+                    ],
+                },
             ],
-            max_tokens: 1000
+            max_tokens: 1000,
         });
 
         const responseText = response.choices[0].message.content;
