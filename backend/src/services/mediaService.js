@@ -3,7 +3,7 @@ import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
-const MEMORIES_BASE_URL = 'https://mavi-backend.memories.ai/serve/api/v2';
+const MEMORIES_BASE_URL = 'https://api.memories.ai/serve/api/v1';
 
 // Helper to detect if file is a video by mimeType
 function isVideo(mimeType) {
