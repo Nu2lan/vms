@@ -3,7 +3,7 @@ import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
-const MEMORIES_BASE_URL = 'https://mavi-backend.memories.ai/api/serve';
+const MEMORIES_BASE_URL = 'https://api.memories.ai/serve/api/v2';
 
 // Helper to detect if file is a video by mimeType
 function isVideo(mimeType) {
@@ -27,86 +27,78 @@ async function analyzeVideoWithMemoriesAI(filePath, prompt) {
     const apiKey = process.env.MEMORIES_AI_API_KEY;
     if (!apiKey) throw new Error('MEMORIES_AI_API_KEY is not set');
 
-    const authHeaders = { Authorization: `Bearer ${apiKey}` };
+    const authHeaders = { Authorization: apiKey };
 
     // Step 1: Upload the video
     console.log('[MemoriesAI] Uploading video:', filePath);
     const form = new FormData();
     form.append('file', fs.createReadStream(filePath));
 
-    const uploadRes = await fetch(`${MEMORIES_BASE_URL}/video/upload`, {
+    const uploadRes = await fetch(`${MEMORIES_BASE_URL}/upload`, {
         method: 'POST',
         headers: { ...authHeaders, ...form.getHeaders() },
         body: form
     });
 
+    const uploadText = await uploadRes.text();
+    console.log('[MemoriesAI] Upload response:', uploadText);
+
     if (!uploadRes.ok) {
-        const errText = await uploadRes.text();
-        throw new Error(`MemoriesAI upload failed (${uploadRes.status}): ${errText}`);
+        throw new Error(`MemoriesAI upload failed (${uploadRes.status}): ${uploadText}`);
     }
 
-    const uploadData = await uploadRes.json();
-    console.log('[MemoriesAI] Upload response:', JSON.stringify(uploadData));
+    const uploadData = JSON.parse(uploadText);
 
-    // Extract videoNo — the unique video ID for polling
-    const videoNo = uploadData?.data?.videoNo || uploadData?.videoNo || uploadData?.data?.id || uploadData?.id;
-    if (!videoNo) {
-        throw new Error(`MemoriesAI: Could not extract videoNo from upload response: ${JSON.stringify(uploadData)}`);
-    }
-
-    // Step 2: Poll until video processing is COMPLETED
-    console.log('[MemoriesAI] Polling for video processing, videoNo:', videoNo);
-    const MAX_POLL = 30;   // max 30 attempts
-    const POLL_INTERVAL = 5000; // 5 seconds between polls
-
-    for (let poll = 1; poll <= MAX_POLL; poll++) {
-        await new Promise(r => setTimeout(r, POLL_INTERVAL));
-
-        const statusRes = await fetch(`${MEMORIES_BASE_URL}/video/status/${videoNo}`, {
-            headers: authHeaders
-        });
-
-        if (!statusRes.ok) {
-            console.warn(`[MemoriesAI] Status check failed (${statusRes.status}), retrying...`);
-            continue;
-        }
-
-        const statusData = await statusRes.json();
-        console.log(`[MemoriesAI] Poll ${poll} status:`, JSON.stringify(statusData));
-
-        const status = statusData?.data?.status || statusData?.status || '';
-        if (status === 'COMPLETED' || status === 'completed' || status === 'done') {
-            break;
-        }
-        if (status === 'FAILED' || status === 'failed' || status === 'error') {
-            throw new Error(`MemoriesAI: Video processing failed with status: ${status}`);
-        }
-
-        if (poll === MAX_POLL) {
-            throw new Error('MemoriesAI: Video processing timed out after 150 seconds');
-        }
-    }
-
-    // Step 3: Query the video with the prompt
-    console.log('[MemoriesAI] Querying video chat, videoNo:', videoNo);
-    const queryRes = await fetch(`${MEMORIES_BASE_URL}/video/chat`, {
+    // Step 2: Query the video with the prompt
+    // Try to use the query endpoint first, fallback to chat
+    console.log('[MemoriesAI] Querying video analysis...');
+    
+    // Try /query endpoint
+    const queryRes = await fetch(`${MEMORIES_BASE_URL}/query`, {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoNo, query: prompt })
+        body: JSON.stringify({
+            file: uploadData?.data?.file || uploadData?.data?.fileName || uploadData?.data?.url,
+            query: prompt,
+            ...(uploadData?.data?.videoNo && { videoNo: uploadData.data.videoNo }),
+            ...(uploadData?.data?.id && { id: uploadData.data.id })
+        })
     });
 
+    const queryText = await queryRes.text();
+    console.log('[MemoriesAI] Query response:', queryText);
+
     if (!queryRes.ok) {
-        const errText = await queryRes.text();
-        throw new Error(`MemoriesAI query failed (${queryRes.status}): ${errText}`);
+        // Fallback: try /chat endpoint
+        console.log('[MemoriesAI] /query failed, trying /chat...');
+        const chatRes = await fetch(`${MEMORIES_BASE_URL}/chat`, {
+            method: 'POST',
+            headers: { ...authHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                file: uploadData?.data?.file || uploadData?.data?.fileName || uploadData?.data?.url,
+                query: prompt,
+                ...(uploadData?.data?.videoNo && { videoNo: uploadData.data.videoNo }),
+                ...(uploadData?.data?.id && { id: uploadData.data.id })
+            })
+        });
+
+        const chatText = await chatRes.text();
+        console.log('[MemoriesAI] Chat response:', chatText);
+
+        if (!chatRes.ok) {
+            throw new Error(`MemoriesAI query failed (${chatRes.status}): ${chatText}`);
+        }
+
+        const chatData = JSON.parse(chatText);
+        const chatAnswer = chatData?.data?.answer || chatData?.data?.response || chatData?.answer || chatData?.response || chatData?.result || '';
+        if (!chatAnswer) throw new Error(`MemoriesAI: Empty answer: ${chatText}`);
+        return chatAnswer;
     }
 
-    const queryData = await queryRes.json();
-    console.log('[MemoriesAI] Query response:', JSON.stringify(queryData));
-
-    // Extract answer text
+    const queryData = JSON.parse(queryText);
     const answerText = queryData?.data?.answer || queryData?.data?.response || queryData?.answer || queryData?.response || queryData?.result || '';
     if (!answerText) {
-        throw new Error(`MemoriesAI: Empty answer from query: ${JSON.stringify(queryData)}`);
+        throw new Error(`MemoriesAI: Empty answer from query: ${queryText}`);
     }
 
     return answerText;
