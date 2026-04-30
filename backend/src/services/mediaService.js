@@ -2,6 +2,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import fs from "fs";
+import path from "path";
 import OpenAI from "openai";
 
 const MAVI_BASE_URL = "https://mavi-backend.memories.ai/serve/api/v2";
@@ -38,27 +39,37 @@ function unwrapMemoriesError(err) {
 }
 
 async function uploadVideoAsset(filePath) {
+    const originalFilename = path.basename(filePath);
+    const signedUrlRes = await axios.post(
+        `${MAVI_BASE_URL}/upload/signed-url`,
+        { original_filename: originalFilename },
+        {
+            headers: {
+                ...memoriesAuthHeader(),
+                "Content-Type": "application/json",
+            },
+        }
+    );
+
+    const signedBody = signedUrlRes.data;
+    const assetId = signedBody?.data?.asset_id;
+    const signedUrl = signedBody?.data?.signed_url;
+    if (!assetId || !signedUrl) {
+        throw new Error(signedBody?.msg || "Failed to get upload signed URL");
+    }
+
     const form = new FormData();
     form.append("file", fs.createReadStream(filePath));
 
-    const res = await axios.post(`${MAVI_BASE_URL}/upload`, form, {
+    await axios.post(signedUrl, form, {
         headers: {
-            ...memoriesAuthHeader(),
             ...form.getHeaders(),
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
     });
 
-    const body = res.data;
-    const assetId = body?.data?.asset_id;
-    if (body?.code !== 200 && body?.success !== true) {
-        throw new Error(body?.msg || "Upload failed");
-    }
-    if (!assetId) {
-        throw new Error("Upload failed: no asset_id returned");
-    }
-    return assetId;
+    return { assetId, fileUri: signedUrl };
 }
 
 async function waitForAssetReady(assetId) {
@@ -101,9 +112,23 @@ function extractVlmText(data) {
 async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
     const model = process.env.MEMORIES_VLM_MODEL?.trim() || DEFAULT_VLM_MODEL;
 
-    const assetId = await uploadVideoAsset(filePath);
+    const { assetId, fileUri } = await uploadVideoAsset(filePath);
     console.log("[MemoriesAI] Uploaded asset_id:", assetId);
     await waitForAssetReady(assetId);
+
+    const userContent = [{ type: "text", text: prompt }];
+    if (model.startsWith("nova:")) {
+        userContent.push({
+            type: "video_url",
+            video_url: { url: fileUri },
+        });
+    } else {
+        userContent.push({
+            type: "input_file",
+            file_uri: fileUri,
+            mime_type: mimeType || "video/mp4",
+        });
+    }
 
     const payload = {
         model,
@@ -115,31 +140,25 @@ async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
             },
             {
                 role: "user",
-                content: [
-                    { type: "text", text: prompt },
-                    {
-                        type: "input_file",
-                        file_uri: assetId,
-                        mime_type: mimeType || "video/mp4",
-                    },
-                ],
+                content: userContent,
             },
         ],
         max_tokens: 2000,
         temperature: 0.3,
-        extra_body: {
-            metadata: {
-                response_mime_type: "application/json",
-            },
-        },
     };
 
-    const res = await axios.post(`${MAVI_BASE_URL}/vu/chat/completions`, payload, {
-        headers: {
-            ...memoriesAuthHeader(),
-            "Content-Type": "application/json",
-        },
-    });
+    let res;
+    try {
+        res = await axios.post(`${MAVI_BASE_URL}/vu/chat/completions`, payload, {
+            headers: {
+                ...memoriesAuthHeader(),
+                "Content-Type": "application/json",
+            },
+        });
+    } catch (err) {
+        console.error("[MemoriesAI] VLM 4xx/5xx details:", err.response?.data || err.message);
+        throw err;
+    }
 
     const body = res.data;
     if (body?.failed === true || (body?.code != null && body.code !== 200)) {
