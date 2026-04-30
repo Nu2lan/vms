@@ -3,133 +3,101 @@ import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
-const MEMORIES_BASE_URL = 'https://api.memories.ai/serve/api/v1';
+const MEMORIES_BASE_V1 = "https://api.memories.ai/serve/api/v1";
+const MEMORIES_VLM_URL = `${MEMORIES_BASE_V1}/vu`;
 
-// Helper to detect if file is a video by mimeType
-function isVideo(mimeType) {
-    return mimeType && mimeType.startsWith('video/');
-}
-
-// Helper to convert local file to base64 data URL for OpenAI vision
-function fileToDataUrl(filePath, mimeType) {
-    if (!fs.existsSync(filePath)) {
-        throw new Error(`Media file not found on disk: ${filePath}`);
-    }
-    const base64 = Buffer.from(fs.readFileSync(filePath)).toString('base64');
-    return `data:${mimeType};base64,${base64}`;
-}
-
-// ─────────────────────────────────────────────
-// Memories AI — Upload video, then analyze via VLM (OpenAI-compatible)
-// ─────────────────────────────────────────────
-async function analyzeVideoWithMemoriesAI(filePath, mimeType, prompt) {
+async function analyzeVideoOfficial(filePath, mimeType, prompt) {
     const apiKey = process.env.MEMORIES_AI_API_KEY;
-    if (!apiKey) throw new Error('MEMORIES_AI_API_KEY is not set');
+    if (!apiKey) throw new Error("MEMORIES_AI_API_KEY not set");
 
-    // Step 1: Upload the video file to get asset_id
-    console.log('[MemoriesAI] Uploading video:', filePath);
+    // ─────────────────────────────────────────────
+    // 1️⃣ UPLOAD VIDEO → GET asset_id
+    // ─────────────────────────────────────────────
+    console.log("[MemoriesAI] Uploading video…");
+
     const form = new FormData();
-    form.append('file', fs.createReadStream(filePath));
+    form.append("file", fs.createReadStream(filePath));
 
-    const uploadRes = await fetch(`${MEMORIES_BASE_URL}/upload`, {
-        method: 'POST',
-        headers: { Authorization: apiKey, ...form.getHeaders() },
+    const uploadRes = await fetch(`${MEMORIES_BASE_V1}/upload`, {
+        method: "POST",
+        headers: {
+            Authorization: apiKey,
+            ...form.getHeaders()
+        },
         body: form
     });
 
-    const uploadText = await uploadRes.text();
-    console.log('[MemoriesAI] Upload response:', uploadText);
+    const uploadJson = await uploadRes.json();
+    console.log("[MemoriesAI] Upload response:", uploadJson);
 
-    if (!uploadRes.ok) {
-        throw new Error(`MemoriesAI upload failed (${uploadRes.status}): ${uploadText}`);
+    if (!uploadJson?.success || !uploadJson?.data?.asset_id) {
+        throw new Error("Upload failed: " + JSON.stringify(uploadJson));
     }
 
-    const uploadData = JSON.parse(uploadText);
-    if (!uploadData?.success || !uploadData?.data?.asset_id) {
-        throw new Error(`MemoriesAI upload failed: ${uploadText}`);
+    const assetId = uploadJson.data.asset_id;
+    console.log("[MemoriesAI] asset_id =", assetId);
+
+    // ─────────────────────────────────────────────
+    // 2️⃣ POLL METADATA UNTIL STATUS = SUCCESS
+    // ─────────────────────────────────────────────
+    console.log("[MemoriesAI] Polling metadata…");
+
+    for (let i = 1; i <= 30; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+
+        const metaRes = await fetch(`${MEMORIES_BASE_V1}/metadata/${assetId}`, {
+            headers: { Authorization: apiKey }
+        });
+
+        const metaJson = await metaRes.json();
+        const status = metaJson?.data?.upload_status;
+
+        console.log(`Poll ${i}: ${status}`);
+
+        if (status === "SUCCESS") break;
+        if (status === "FAILED") throw new Error("Video processing FAILED");
+
+        if (i === 30) console.warn("Polling timed out, continuing...");
     }
 
-    const assetId = uploadData.data.asset_id;
-    console.log('[MemoriesAI] Got asset_id:', assetId);
+    // ─────────────────────────────────────────────
+    // 3️⃣ VIDEO ANALYSIS USING VLM (OFFICIAL)
+    // ─────────────────────────────────────────────
+    console.log("[MemoriesAI] Analyzing video via VLM…");
 
-    // Step 2: Wait for upload processing to complete
-    // Check metadata until upload_status is SUCCESS
-    console.log('[MemoriesAI] Checking upload status...');
-    const MAX_POLL = 30;
-    const POLL_INTERVAL = 3000;
-
-    for (let poll = 1; poll <= MAX_POLL; poll++) {
-        await new Promise(r => setTimeout(r, POLL_INTERVAL));
-
-        try {
-            const metaRes = await fetch(`${MEMORIES_BASE_URL}/metadata/${assetId}`, {
-                headers: { Authorization: apiKey }
-            });
-
-            if (metaRes.ok) {
-                const metaData = await metaRes.json();
-                const status = metaData?.data?.upload_status || '';
-                console.log(`[MemoriesAI] Poll ${poll}: upload_status = ${status}`);
-
-                if (status === 'SUCCESS') break;
-                if (status === 'FAILED') throw new Error('MemoriesAI: Video upload processing FAILED');
-            }
-        } catch (err) {
-            if (err.message.includes('FAILED')) throw err;
-            console.warn(`[MemoriesAI] Status check error (poll ${poll}):`, err.message);
-        }
-
-        if (poll === MAX_POLL) {
-            console.warn('[MemoriesAI] Polling timed out, proceeding anyway...');
-        }
-    }
-
-    // Step 3: Use VLM endpoint (OpenAI-compatible) to analyze the video
-    // The VLM endpoint uses the same OpenAI chat.completions format
-    console.log('[MemoriesAI] Analyzing video via VLM...');
-
-    const memoriesClient = new OpenAI({
-        apiKey: apiKey,
-        baseURL: `${MEMORIES_BASE_URL}/vu`
+    const client = new OpenAI({
+        apiKey,
+        baseURL: MEMORIES_VLM_URL
     });
 
-    const response = await memoriesClient.chat.completions.create({
-        model: 'gemini:gemini-2.5-flash',
+    const response = await client.chat.completions.create({
+        model: "gemini:gemini-2.5-flash",
         messages: [
+            { role: "system", content: "JSON-only response required." },
             {
-                role: 'system',
-                content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze a video.'
-            },
-            {
-                role: 'user',
+                role: "user",
                 content: [
-                    { type: 'text', text: prompt },
+                    { type: "text", text: prompt },
                     {
-                        type: 'input_file',
+                        type: "input_file",
                         file_uri: `asset://${assetId}`,
-                        mime_type: mimeType || 'video/mp4'
+                        mime_type: mimeType
                     }
                 ]
             }
         ],
-        temperature: 0.3,
-        max_tokens: 2000,
-        n: 1,
-        stream: false
+        temperature: 0.2,
+        max_tokens: 1500
     });
 
-    // Response format: { choices: [{ text: "..." }] }
-    const answerText = response?.choices?.[0]?.text
-        || response?.choices?.[0]?.message?.content
-        || '';
+    const answer =
+        response?.choices?.[0]?.message?.content ??
+        response?.choices?.[0]?.text ??
+        "";
 
-    console.log('[MemoriesAI] VLM response:', answerText);
+    console.log("[MemoriesAI] VLM Response:", answer);
 
-    if (!answerText) {
-        throw new Error(`MemoriesAI VLM returned empty response: ${JSON.stringify(response)}`);
-    }
-
-    return answerText;
+    return answer;
 }
 
 // ─────────────────────────────────────────────
