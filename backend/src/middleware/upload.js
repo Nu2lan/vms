@@ -27,7 +27,7 @@ const fileFilter = (req, file, cb) => {
 export const upload = multer({
     storage,
     limits: {
-        fileSize: 50 * 1024 * 1024 // 50MB limit (matches memories.ai API limit)
+        fileSize: 100 * 1024 * 1024 // 100MB limit for videos
     },
     fileFilter
 });

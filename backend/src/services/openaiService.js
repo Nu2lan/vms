@@ -1,7 +1,5 @@
 import OpenAI from 'openai';
 import fs from 'fs';
-import FormData from 'form-data';
-import fetch from 'node-fetch';
 
 // Helper to convert local file to base64 data URL for OpenAI vision
 function fileToDataUrl(filePath, mimeType) {
@@ -12,178 +10,12 @@ function fileToDataUrl(filePath, mimeType) {
     return `data:${mimeType};base64,${base64}`;
 }
 
-// ─── memories.ai Video Analysis ───────────────────────────────────────────────
-// Uploads the video file and returns a plain-language description in Azerbaijani.
-async function analyzeVideoWithMemoriesAI(filePath, mimeType) {
-    const apiKey = process.env.MEMORISE_API_KEY;
-    if (!apiKey) throw new Error('MEMORISE_API_KEY is not set.');
-
-    if (!fs.existsSync(filePath)) {
-        throw new Error(`Video file not found: ${filePath}`);
-    }
-
-    const BASE_URL = 'https://mavi-backend.memories.ai/serve/api/v2';
-
-    // Check file size — memories.ai has an upload size limit
-    const fileSizeBytes = fs.statSync(filePath).size;
-    const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(1);
-    console.log(`[MemoriesAI] File size: ${fileSizeMB} MB`);
-
-    const MAX_SIZE_MB = 50;
-    if (fileSizeBytes > MAX_SIZE_MB * 1024 * 1024) {
-        throw new Error(`Video faylı çox böyükdür (${fileSizeMB} MB). Zəhmət olmasa ${MAX_SIZE_MB} MB-dan kiçik bir video yükləyin (təxminən 30-60 saniyəlik qeyd).`);
-    }
-
-    console.log('[MemoriesAI] Uploading video for analysis...');
-
-    const form = new FormData();
-    form.append('file', fs.createReadStream(filePath), {
-        filename: filePath.split(/[\\/]/).pop() || 'video.mp4',
-        contentType: mimeType
-    });
-
-    // Upload the video
-    let uploadRes;
-    try {
-        uploadRes = await fetch(`${BASE_URL}/upload`, {
-            method: 'POST',
-            headers: {
-                'Authorization': apiKey,   // No "Bearer" prefix per docs
-                ...form.getHeaders()
-            },
-            body: form
-        });
-    } catch (err) {
-        throw new Error(`MemoriesAI network error: ${err.message}`);
-    }
-
-    const uploadData = await uploadRes.json();
-    console.log('[MemoriesAI] Upload response:', JSON.stringify(uploadData));
-
-    if (!uploadRes.ok) {
-        throw new Error(`MemoriesAI upload error ${uploadRes.status}: ${uploadData?.message || JSON.stringify(uploadData)}`);
-    }
-
-    // If the response already contains a description/caption, return it directly
-    const directDescription = uploadData.caption || uploadData.description || uploadData.text || uploadData.result || uploadData.output;
-    if (directDescription) {
-        return directDescription;
-    }
-
-    // Otherwise, poll for job completion using the returned ID
-    const jobId = uploadData.id || uploadData.job_id || uploadData.video_id || uploadData.task_id;
-    if (!jobId) {
-        throw new Error(`MemoriesAI: No job ID or description in upload response. Response: ${JSON.stringify(uploadData)}`);
-    }
-
-    console.log(`[MemoriesAI] Job ID: ${jobId} — polling for result...`);
-
-    // Poll up to 30 times with 3s intervals (90 seconds max)
-    for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-
-        const statusRes = await fetch(`${BASE_URL}/upload/${jobId}`, {
-            headers: { 'Authorization': apiKey }
-        });
-        const statusData = await statusRes.json();
-        console.log(`[MemoriesAI] Poll ${i + 1}:`, JSON.stringify(statusData));
-
-        const status = statusData.status || statusData.state;
-
-        if (status === 'FAIL' || status === 'ERROR') {
-            throw new Error(`MemoriesAI job failed: ${JSON.stringify(statusData)}`);
-        }
-
-        const description = statusData.caption || statusData.description || statusData.text || statusData.result || statusData.output;
-        if (description) {
-            return description;
-        }
-    }
-
-    throw new Error('MemoriesAI: Video analysis timed out after 90 seconds.');
-}
-
-
-// ─── OpenAI Structured Analysis from text description ─────────────────────────
-async function structureWithOpenAI(openai, videoDescription) {
-    const prompt = `
-  You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
-  A video was analyzed and the following description was extracted (in Azerbaijani):
-  
-  "${videoDescription}"
-  
-  Based on this description, generate a structured appeal report.
-  
-  IMPORTANT: The "title" and "description" fields MUST be written in Azerbaijani language.
-  
-  You MUST return ONLY a valid JSON object matching exactly this structure, no markdown:
-  {
-    "no_problem_detected": true/false,
-    "title": "Problemi ümumiləşdirən qısa 3-5 sözdən ibarət başlıq (Azərbaycan dilində)",
-    "description": "Göstərilən problemi ətraflı təsvir edən 3-5 cümlədən ibarət DETALLI mətn (Azərbaycan dilində).",
-    "category": "One of: Roads & Transport, Utilities, Parks & Environment, Public Safety, Waste Management, Building & Infrastructure, Other",
-    "priority": "One of: Low, Medium, High, Critical",
-    "location": {
-       "gps_confidence": 0.5,
-       "visual_landmarks": []
-    },
-    "confidence_scores": {
-       "description": 0.9,
-       "category": 0.8,
-       "priority": 0.8
-    }
-  }
-  
-  Rules:
-  - If the description does NOT describe any public infrastructure problem ASAN can resolve, set "no_problem_detected" to true.
-  - "category" and "priority" must be strictly from the listed options (keep in English).
-  - Title and description must be in Azerbaijani.
-  `;
-
-    const response = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        response_format: { type: 'json_object' },
-        messages: [
-            { role: 'system', content: 'You are a JSON-only assistant. Always respond with a valid JSON object.' },
-            { role: 'user', content: prompt }
-        ],
-        max_tokens: 1500
-    });
-
-    return JSON.parse(response.choices[0].message.content);
-}
-
-// ─── Main Export: analyzeAppealMedia ─────────────────────────────────────────
 export const analyzeAppealMedia = async (filePath, mimeType) => {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const isVideo = mimeType.startsWith('video/');
 
-    // VIDEO: memories.ai → description → OpenAI structure
-    if (isVideo) {
-        console.log('[Analysis] Video detected — using memories.ai + OpenAI pipeline');
-        const MAX_RETRIES = 2;
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                const videoDescription = await analyzeVideoWithMemoriesAI(filePath, mimeType);
-                console.log('[MemoriesAI] Description:', videoDescription);
-                const result = await structureWithOpenAI(openai, videoDescription);
-                if (result.title && result.description && result.category && result.priority) {
-                    return result;
-                }
-                console.warn(`[OpenAI] Attempt ${attempt}: Missing fields, retrying...`);
-            } catch (error) {
-                console.error(`[Video Analysis] Attempt ${attempt} error:`, error.message);
-                if (attempt === MAX_RETRIES) throw error;
-            }
-        }
-        throw new Error('Video AI analysis failed after multiple attempts.');
-    }
-
-    // IMAGE: direct OpenAI Vision
-    console.log('[Analysis] Image detected — using OpenAI Vision');
     const prompt = `
   You are an AI assistant for a local government "ASAN" citizen appeal system in Azerbaijan.
-  Analyze this image of a reported problem. 
+  Analyze this image (or video frame) of a reported problem. 
   
   IMPORTANT: The "title" and "description" fields MUST be written in Azerbaijani language (Azərbaycan dili).
   
@@ -206,11 +38,14 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
   }
   
   Rules:
-  - If the image does NOT show any public infrastructure problem ASAN can resolve, set "no_problem_detected" to true.
-  - "title" and "description" MUST be in Azerbaijani language.
+  - If the image does NOT show any public infrastructure problem, city issue, or something that ASAN public services can resolve (e.g. selfies, food, animals, random objects, indoor personal photos), set "no_problem_detected" to true. In that case, still fill in the other fields with placeholder values.
+  - If the image DOES show a real public problem (broken roads, damaged infrastructure, waste, flooding, unsafe conditions, etc.), set "no_problem_detected" to false.
+  - The "title" and "description" MUST be in Azerbaijani language.
+  - The "description" MUST be detailed and comprehensive, at least 3-5 sentences long. Describe what you see, the nature of the problem, its potential impact, and urgency.
+  - Do not hallucinate. If completely unclear, set confidence scores very low.
   - "category" must be strictly from the listed options (keep in English).
   - "priority" must be strictly from the listed options (keep in English).
-  - You MUST always return ALL fields in the JSON structure.
+  - You MUST always return ALL fields in the JSON structure. Never omit any field.
   `;
 
     const imageUrl = fileToDataUrl(filePath, mimeType);
@@ -222,7 +57,10 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
                 model: 'gpt-4o',
                 response_format: { type: 'json_object' },
                 messages: [
-                    { role: 'system', content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze an image.' },
+                    {
+                        role: 'system',
+                        content: 'You are a JSON-only assistant. Always respond with a valid JSON object containing all requested fields. Never refuse to analyze an image.'
+                    },
                     {
                         role: 'user',
                         content: [
@@ -234,21 +72,26 @@ export const analyzeAppealMedia = async (filePath, mimeType) => {
                 max_tokens: 2000
             });
 
-            const result = JSON.parse(response.choices[0].message.content);
+            const responseText = response.choices[0].message.content;
+            console.log(`[OpenAI] Attempt ${attempt} raw response:`, responseText);
+            const result = JSON.parse(responseText);
+
+            // Validate required fields
             if (result.title && result.description && result.category && result.priority) {
                 return result;
             }
+
             console.warn(`[OpenAI] Attempt ${attempt}: Missing required fields, retrying...`);
         } catch (error) {
             console.error(`[OpenAI] Attempt ${attempt} error:`, error.message);
-            if (attempt === MAX_RETRIES) throw new Error(error.message || 'Failed to analyze media via OpenAI.');
+            if (attempt === MAX_RETRIES) {
+                throw new Error(error.message || "Failed to analyze media via OpenAI.");
+            }
         }
     }
 
-    throw new Error('AI analysis failed after multiple attempts. Please try again.');
+    throw new Error("AI analysis failed after multiple attempts. Please try again.");
 };
-
-
 
 export const verifyResolutionMedia = async (originalFilePath, originalMimeType, resolutionFilePath, resolutionMimeType) => {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });

@@ -90,12 +90,6 @@ export default function SubmitAppeal() {
     const handleNativeCameraCapture = async (e) => {
         const selected = e.target.files[0];
         if (!selected) return;
-        // 50MB limit for memories.ai video analysis
-        if (selected.size > 50 * 1024 * 1024) {
-            setError(`Video çox böyükdür (${(selected.size / (1024*1024)).toFixed(1)} MB). Zəhmət olmasa 50 MB-dan kiçik video çəkin.`);
-            e.target.value = '';
-            return;
-        }
         setFile(selected);
         setPreview(URL.createObjectURL(selected));
         setLocation(null);
@@ -146,12 +140,6 @@ export default function SubmitAppeal() {
     const handleFileChange = async (e) => {
         const selected = e.target.files[0];
         if (!selected) return;
-        // 50MB limit — matches memories.ai API limit for video analysis
-        if (selected.size > 50 * 1024 * 1024) {
-            setError(`Fayl çox böyükdür (${(selected.size / (1024*1024)).toFixed(1)} MB). Zəhmət olmasa 50 MB-dan kiçik fayl seçin (təxminən 30-60 saniyəlik video).`);
-            e.target.value = '';
-            return;
-        }
         setFile(selected);
         setPreview(URL.createObjectURL(selected));
         setLocation(null);
