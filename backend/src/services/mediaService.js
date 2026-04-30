@@ -1,103 +1,131 @@
-import OpenAI from 'openai';
-import fs from 'fs';
-import FormData from 'form-data';
-import fetch from 'node-fetch';
+// src/services/mediaService.js
+import axios from "axios";
+import FormData from "form-data";
+import fs from "fs";
 
-const MEMORIES_BASE_V1 = "https://api.memories.ai/serve/api/v1";
-const MEMORIES_VLM_URL = `${MEMORIES_BASE_V1}/vu`;
-
-async function analyzeVideoOfficial(filePath, mimeType, prompt) {
-    const apiKey = process.env.MEMORIES_AI_API_KEY;
-    if (!apiKey) throw new Error("MEMORIES_AI_API_KEY not set");
-
-    // ─────────────────────────────────────────────
-    // 1️⃣ UPLOAD VIDEO → GET asset_id
-    // ─────────────────────────────────────────────
-    console.log("[MemoriesAI] Uploading video…");
-
-    const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-
-    const uploadRes = await fetch(`${MEMORIES_BASE_V1}/upload`, {
-        method: "POST",
-        headers: {
-            Authorization: apiKey,
-            ...form.getHeaders()
-        },
-        body: form
-    });
-
-    const uploadJson = await uploadRes.json();
-    console.log("[MemoriesAI] Upload response:", uploadJson);
-
-    if (!uploadJson?.success || !uploadJson?.data?.asset_id) {
-        throw new Error("Upload failed: " + JSON.stringify(uploadJson));
+class MemoriesAIService {
+    constructor() {
+        this.apiKey = process.env.MEMORIES_AI_API_KEY;
+        this.baseUrl = "https://api.memories.ai/v1";
+        this.pollInterval = 2000;
     }
 
-    const assetId = uploadJson.data.asset_id;
-    console.log("[MemoriesAI] asset_id =", assetId);
+    /** ---------------------
+     *  Base Request Wrapper
+     * --------------------- */
+    async request(method, url, data, headers = {}) {
+        try {
+            const res = await axios({
+                method,
+                url: `${this.baseUrl}${url}`,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    ...headers,
+                },
+                data,
+            });
 
-    // ─────────────────────────────────────────────
-    // 2️⃣ POLL METADATA UNTIL STATUS = SUCCESS
-    // ─────────────────────────────────────────────
-    console.log("[MemoriesAI] Polling metadata…");
-
-    for (let i = 1; i <= 30; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-
-        const metaRes = await fetch(`${MEMORIES_BASE_V1}/metadata/${assetId}`, {
-            headers: { Authorization: apiKey }
-        });
-
-        const metaJson = await metaRes.json();
-        const status = metaJson?.data?.upload_status;
-
-        console.log(`Poll ${i}: ${status}`);
-
-        if (status === "SUCCESS") break;
-        if (status === "FAILED") throw new Error("Video processing FAILED");
-
-        if (i === 30) console.warn("Polling timed out, continuing...");
+            return res.data;
+        } catch (err) {
+            console.error("[MemoriesAI] Error:", err.response?.data || err.message);
+            throw new Error(err.response?.data?.message || "MemoriesAI API request failed");
+        }
     }
 
-    // ─────────────────────────────────────────────
-    // 3️⃣ VIDEO ANALYSIS USING VLM (OFFICIAL)
-    // ─────────────────────────────────────────────
-    console.log("[MemoriesAI] Analyzing video via VLM…");
+    /** ---------------------
+     *  Step 1 — Upload file
+     * --------------------- */
+    async uploadMedia(filePath) {
+        const form = new FormData();
+        form.append("file", fs.createReadStream(filePath));
 
-    const client = new OpenAI({
-        apiKey,
-        baseURL: MEMORIES_VLM_URL
-    });
+        const res = await this.request(
+            "POST",
+            "/upload",
+            form,
+            form.getHeaders()
+        );
 
-    const response = await client.chat.completions.create({
-        model: "gemini:gemini-2.5-flash",
-        messages: [
-            { role: "system", content: "JSON-only response required." },
-            {
-                role: "user",
-                content: [
-                    { type: "text", text: prompt },
-                    {
-                        type: "input_file",
-                        file_uri: `asset://${assetId}`,
-                        mime_type: mimeType
+        const fileUrl = res?.data?.fileUrl;
+
+        if (!fileUrl) {
+            throw new Error("Upload failed: No fileUrl returned");
+        }
+
+        return fileUrl;
+    }
+
+    /** -------------------------------
+     *  Step 2 — Create VLM task
+     * ------------------------------- */
+    async createVisionTask(fileUrl, prompt) {
+        const payload = {
+            model: "vlm",
+            input: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "input_text", text: prompt },
+                        { type: "input_image", image_url: fileUrl }
+                    ],
+                },
+            ],
+        };
+
+        const res = await this.request("POST", "/task", payload);
+
+        const taskId = res?.data?.task_id;
+
+        if (!taskId) {
+            throw new Error("Failed to create task: No task_id returned");
+        }
+
+        return taskId;
+    }
+
+    /** -------------------------------
+     *  Step 3 — Poll task status
+     * ------------------------------- */
+    async pollTask(taskId) {
+        return new Promise((resolve, reject) => {
+            const interval = setInterval(async () => {
+                try {
+                    const res = await this.request("GET", `/task/${taskId}`);
+
+                    if (res?.data?.status === "SUCCESS") {
+                        clearInterval(interval);
+                        resolve(res.data);
                     }
-                ]
-            }
-        ],
-        temperature: 0.2,
-        max_tokens: 1500
-    });
 
-    const answer =
-        response?.choices?.[0]?.message?.content ??
-        response?.choices?.[0]?.text ??
-        "";
+                    if (res?.data?.status === "FAILED") {
+                        clearInterval(interval);
+                        reject(new Error("MemoriesAI Task Failed"));
+                    }
+                } catch (err) {
+                    clearInterval(interval);
+                    reject(err);
+                }
+            }, this.pollInterval);
+        });
+    }
 
-    console.log("[MemoriesAI] VLM Response:", answer);
+    /** -------------------------------
+     *  Master: Upload → Analyze
+     * ------------------------------- */
+    async analyzeMedia(filePath, prompt) {
+        // 1. Upload media
+        const fileUrl = await this.uploadMedia(filePath);
+        console.log("[MemoriesAI] Uploaded:", fileUrl);
 
-    return answer;
+        // 2. Create task
+        const taskId = await this.createVisionTask(fileUrl, prompt);
+        console.log("[MemoriesAI] Task created:", taskId);
+
+        // 3. Poll until result
+        const result = await this.pollTask(taskId);
+
+        return result?.output_text || result;
+    }
 }
 
 // ─────────────────────────────────────────────
