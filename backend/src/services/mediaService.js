@@ -1,9 +1,12 @@
 import OpenAI from 'openai';
 import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
 const MEMORIES_BASE_URL = 'https://api.memories.ai/serve/api/v2';
+const MAX_UPLOAD_SIZE = 20 * 1024 * 1024; // 20MB limit for Memories AI
 
 // Helper to detect if file is a video by mimeType
 function isVideo(mimeType) {
@@ -19,6 +22,37 @@ function fileToDataUrl(filePath, mimeType) {
     return `data:${mimeType};base64,${base64}`;
 }
 
+// Compress video with ffmpeg if file is too large
+function compressVideoIfNeeded(filePath) {
+    const stats = fs.statSync(filePath);
+    const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
+    console.log(`[MemoriesAI] Video size: ${sizeMB}MB (limit: ${MAX_UPLOAD_SIZE / 1024 / 1024}MB)`);
+
+    if (stats.size <= MAX_UPLOAD_SIZE) {
+        return filePath; // No compression needed
+    }
+
+    const compressedPath = filePath.replace(/\.[^.]+$/, '_compressed.mp4');
+    console.log(`[MemoriesAI] Compressing video to ${compressedPath}...`);
+
+    try {
+        execSync(
+            `ffmpeg -y -i "${filePath}" -vf "scale=-2:720" -c:v libx264 -preset fast -crf 28 -b:v 1M -c:a aac -b:a 64k -movflags +faststart "${compressedPath}"`,
+            { timeout: 120000, stdio: 'pipe' }
+        );
+
+        const compressedStats = fs.statSync(compressedPath);
+        const compressedMB = (compressedStats.size / (1024 * 1024)).toFixed(1);
+        console.log(`[MemoriesAI] Compressed: ${sizeMB}MB → ${compressedMB}MB`);
+        return compressedPath;
+    } catch (err) {
+        console.warn('[MemoriesAI] ffmpeg compression failed, using original:', err.message);
+        // Clean up failed file
+        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+        return filePath;
+    }
+}
+
 
 // ─────────────────────────────────────────────
 // Memories AI — Upload video, poll until ready, then query
@@ -29,10 +63,13 @@ async function analyzeVideoWithMemoriesAI(filePath, prompt) {
 
     const authHeaders = { Authorization: apiKey };
 
+    // Compress if needed
+    const uploadPath = compressVideoIfNeeded(filePath);
+
     // Step 1: Upload the video
-    console.log('[MemoriesAI] Uploading video:', filePath);
+    console.log('[MemoriesAI] Uploading video:', uploadPath);
     const form = new FormData();
-    form.append('file', fs.createReadStream(filePath));
+    form.append('file', fs.createReadStream(uploadPath));
 
     const uploadRes = await fetch(`${MEMORIES_BASE_URL}/upload`, {
         method: 'POST',
